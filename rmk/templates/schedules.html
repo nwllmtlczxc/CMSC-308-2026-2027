@@ -3,13 +3,16 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2 class="fw-bold mb-0" style="color: #310742;">Create Schedule</h2>
     <div>
-        <form method="POST" action="{{ url_for('generate') }}" class="d-inline"><button class="btn btn-orange">⚙ Auto-Generate</button></form>
-        <form method="POST" action="{{ url_for('clear_schedules') }}" class="d-inline" onsubmit="return confirm('Clear ALL schedules?')"><button class="btn btn-outline-danger">Clear All</button></form>
+        <form method="POST" action="{{ url_for('generate') }}" class="d-inline">
+{{ csrf_token() }}<button class="btn btn-orange">⚙ Auto-Generate</button></form>
+        <form method="POST" action="{{ url_for('clear_schedules') }}" class="d-inline" onsubmit="return confirm('Clear ALL schedules?')">
+{{ csrf_token() }}<button class="btn btn-outline-danger">Clear All</button></form>
     </div>
 </div>
 
 <div class="card custom-card p-4 mb-4">
     <form method="POST" action="{{ url_for('add_schedule') }}" class="row g-3 align-items-end">
+{{ csrf_token() }}
         <div class="col-md-3">
             <label class="form-label small fw-bold text-muted">Course</label>
             <select name="course_id" class="form-select" required>{% for c in courses %}<option value="{{ c.id }}">{{ c.code }} — {{ c.title }}</option>{% endfor %}</select>
@@ -70,7 +73,8 @@
                     </td>
                     <td class="text-end">
                         {% if s.is_pending %}<button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#assign{{ s.id }}">Assign</button>{% endif %}
-                        <form method="POST" action="{{ url_for('delete_schedule', id=s.id) }}" class="d-inline" onsubmit="return confirm('Delete?')"><button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form>
+                        <form method="POST" action="{{ url_for('delete_schedule', id=s.id) }}" class="d-inline" onsubmit="return confirm('Delete?')">
+{{ csrf_token() }}<button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form>
                     </td>
                 </tr>
 
@@ -79,6 +83,7 @@
                     <div class="modal-dialog">
                         <div class="modal-content">
                             <form method="POST" action="{{ url_for('assign_schedule', id=s.id) }}">
+{{ csrf_token() }}
                                 <div class="modal-header"><h5 class="modal-title">Assign Room & Time</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
                                 <div class="modal-body">
                                     <div class="mb-3"><label class="form-label fw-bold">Room</label><select name="room_id" class="form-select" required>{% for r in rooms %}<option value="{{ r.id }}">{{ r.code }} (Cap: {{ r.capacity }})</option>{% endfor %}</select></div>

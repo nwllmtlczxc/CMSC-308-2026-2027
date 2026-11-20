@@ -6,6 +6,7 @@
         <div class="card custom-card p-4">
             <h5 class="fw-bold mb-3" style="color: #310742;">Add Unavailability</h5>
             <form method="POST" action="{{ url_for('add_availability') }}">
+{{ csrf_token() }}
                 <div class="mb-3">
                     <label class="form-label small fw-bold text-muted">Select Entity</label>
                     <select name="entity" class="form-select" required>
@@ -38,7 +39,8 @@
                         <td>{% if a.faculty_id %}<span class="badge bg-secondary me-2">Faculty</span> {{ a.faculty.name }}{% elif a.room_id %}<span class="badge bg-warning text-dark me-2">Room</span> {{ a.room.code }}{% endif %}</td>
                         <td class="fw-bold">{{ a.day }}</td>
                         <td>{{ a.start_time.strftime('%I:%M %p') }} - {{ a.end_time.strftime('%I:%M %p') }}</td>
-                        <td class="text-end"><form method="POST" action="{{ url_for('delete_availability', id=a.id) }}"><button class="btn btn-sm btn-outline-danger">Remove</button></form></td>
+                        <td class="text-end"><form method="POST" action="{{ url_for('delete_availability', id=a.id) }}">
+{{ csrf_token() }}<button class="btn btn-sm btn-outline-danger">Remove</button></form></td>
                     </tr>
                     {% else %}
                     <tr><td colspan="4" class="text-center text-muted py-4">No blocks set.</td></tr>

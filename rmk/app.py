@@ -1,7 +1,12 @@
 
 
 import os
+import secrets
+from functools import wraps
 
+import click
+from flask import abort
+from flask_wtf.csrf import CSRFProtect
 from xhtml2pdf import pisa
 from io import BytesIO
 from flask import make_response
@@ -14,7 +19,16 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'cmsc308-group3-secret'
+APP_ENV = os.environ.get('APP_ENV', 'development').lower()
+secret_key = os.environ.get('FLASK_SECRET_KEY')
+if APP_ENV == 'production' and not secret_key:
+    raise RuntimeError('FLASK_SECRET_KEY must be set when APP_ENV=production.')
+app.config['SECRET_KEY'] = secret_key or secrets.token_hex(32)
+app.config['DEBUG'] = APP_ENV == 'development' and os.environ.get('FLASK_DEBUG') == '1'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = APP_ENV == 'production'
+csrf = CSRFProtect(app)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(BASE_DIR, 'timetable.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
@@ -23,6 +37,35 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 login_manager.login_message_category = 'warning'
+
+
+def admin_required(view):
+    """Require an authenticated administrator for management actions."""
+    @wraps(view)
+    @login_required
+    def wrapped_view(*args, **kwargs):
+        if current_user.role != 'Admin':
+            abort(403)
+        return view(*args, **kwargs)
+    return wrapped_view
+
+
+@app.cli.command('init-db')
+def init_db():
+    db.create_all()
+    click.echo('Database tables created.')
+
+
+@app.cli.command('make-admin')
+@click.argument('username')
+def make_admin(username):
+    """Promote an existing registered account to administrator."""
+    user = User.query.filter_by(username=username).first()
+    if user is None:
+        raise click.ClickException(f'No account found for {username!r}.')
+    user.role = 'Admin'
+    db.session.commit()
+    click.echo(f'{username} is now an administrator.')
 
 DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 TIME_SLOTS = [
@@ -202,7 +245,7 @@ def register():
             return redirect(url_for('login'))
     return render_template('register.html')
 
-@app.route('/logout')
+@app.route('/logout', methods=['POST'])
 @login_required
 def logout():
     logout_user()
@@ -244,12 +287,12 @@ def index():
     return render_template('index.html', stats=stats, grid=grid, days=DAYS, time_slots=TIME_SLOTS, sections=sections, selected_section=selected_section)
 
 @app.route('/academic')
-@login_required
+@admin_required
 def academic():
     return render_template('academic.html', courses=Course.query.order_by(Course.code).all(), faculty=Faculty.query.order_by(Faculty.name).all(), rooms=Room.query.order_by(Room.code).all(), sections=Section.query.order_by(Section.name).all(), terms=Term.query.all())
 
 @app.route('/academic/course/add', methods=['POST'])
-@login_required
+@admin_required
 def add_course():
     code, title = request.form.get('code', '').strip().upper(), request.form.get('title', '').strip()
     try: units = int(request.form.get('units', 3))
@@ -262,7 +305,7 @@ def add_course():
     return redirect(url_for('academic'))
 
 @app.route('/academic/course/<int:id>/delete', methods=['POST'])
-@login_required
+@admin_required
 def delete_course(id):
     c = db.session.get(Course, id)
     if not c: flash('Course not found.', 'danger')
@@ -271,7 +314,7 @@ def delete_course(id):
     return redirect(url_for('academic'))
 
 @app.route('/academic/faculty/add', methods=['POST'])
-@login_required
+@admin_required
 def add_faculty():
     name, dept = request.form.get('name', '').strip(), request.form.get('department', '').strip()
     if not name: flash('Faculty name is required.', 'danger'); return redirect(url_for('academic'))
@@ -280,7 +323,7 @@ def add_faculty():
     return redirect(url_for('academic'))
 
 @app.route('/academic/faculty/<int:id>/delete', methods=['POST'])
-@login_required
+@admin_required
 def delete_faculty(id):
     f = db.session.get(Faculty, id)
     if not f: flash('Faculty not found.', 'danger')
@@ -289,7 +332,7 @@ def delete_faculty(id):
     return redirect(url_for('academic'))
 
 @app.route('/academic/room/add', methods=['POST'])
-@login_required
+@admin_required
 def add_room():
     code = request.form.get('code', '').strip().upper()
     try: cap = int(request.form.get('capacity', 30))
@@ -302,7 +345,7 @@ def add_room():
     return redirect(url_for('academic'))
 
 @app.route('/academic/room/<int:id>/delete', methods=['POST'])
-@login_required
+@admin_required
 def delete_room(id):
     r = db.session.get(Room, id)
     if not r: flash('Room not found.', 'danger')
@@ -311,7 +354,7 @@ def delete_room(id):
     return redirect(url_for('academic'))
 
 @app.route('/academic/section/add', methods=['POST'])
-@login_required
+@admin_required
 def add_section():
     name = request.form.get('name', '').strip().upper()
     try: size = int(request.form.get('size', 30))
@@ -324,7 +367,7 @@ def add_section():
     return redirect(url_for('academic'))
 
 @app.route('/academic/section/<int:id>/delete', methods=['POST'])
-@login_required
+@admin_required
 def delete_section(id):
     s = db.session.get(Section, id)
     if not s: flash('Section not found.', 'danger')
@@ -333,7 +376,7 @@ def delete_section(id):
     return redirect(url_for('academic'))
 
 @app.route('/academic/term/add', methods=['POST'])
-@login_required
+@admin_required
 def add_term():
     name = request.form.get('name', '').strip()
     if not name: flash('Term name required.', 'danger'); return redirect(url_for('academic'))
@@ -343,7 +386,7 @@ def add_term():
     return redirect(url_for('academic'))
 
 @app.route('/academic/term/<int:id>/delete', methods=['POST'])
-@login_required
+@admin_required
 def delete_term(id):
     t = db.session.get(Term, id)
     if not t: flash('Term not found.', 'danger')
@@ -352,12 +395,12 @@ def delete_term(id):
     return redirect(url_for('academic'))
 
 @app.route('/availability')
-@login_required
+@admin_required
 def availability():
     return render_template('availability.html', availabilities=Availability.query.order_by(Availability.day).all(), faculty=Faculty.query.order_by(Faculty.name).all(), rooms=Room.query.order_by(Room.code).all(), days=DAYS)
 
 @app.route('/availability/add', methods=['POST'])
-@login_required
+@admin_required
 def add_availability():
     entity, day = request.form.get('entity', ''), request.form.get('day', '')
     start, end = parse_time(request.form.get('start_time', '')), parse_time(request.form.get('end_time', ''))
@@ -372,14 +415,14 @@ def add_availability():
     return redirect(url_for('availability'))
 
 @app.route('/availability/<int:id>/delete', methods=['POST'])
-@login_required
+@admin_required
 def delete_availability(id):
     a = db.session.get(Availability, id)
     if a: db.session.delete(a); db.session.commit(); flash('Block removed.', 'success')
     return redirect(url_for('availability'))
 
 @app.route('/schedules')
-@login_required
+@admin_required
 def schedules():
     all_scheds = Schedule.query.order_by(Schedule.day, Schedule.start_time).all()
     statuses = {}
@@ -391,7 +434,7 @@ def schedules():
     return render_template('schedules.html', schedules=all_scheds, statuses=statuses, terms=Term.query.all(), courses=Course.query.order_by(Course.code).all(), faculty=Faculty.query.order_by(Faculty.name).all(), sections=Section.query.order_by(Section.name).all(), rooms=Room.query.order_by(Room.code).all(), days=DAYS)
 
 @app.route('/schedules/add', methods=['POST'])
-@login_required
+@admin_required
 def add_schedule():
     try: term_id, course_id, faculty_id, section_id = int(request.form['term_id']), int(request.form['course_id']), int(request.form['faculty_id']), int(request.form['section_id'])
     except (KeyError, ValueError): flash('Select term, course, faculty, and section.', 'danger'); return redirect(url_for('schedules'))
@@ -408,7 +451,7 @@ def add_schedule():
     db.session.commit(); flash('Pending schedule added.', 'info'); return redirect(url_for('schedules'))
 
 @app.route('/schedules/<int:id>/assign', methods=['POST'])
-@login_required
+@admin_required
 def assign_schedule(id):
     s = db.session.get(Schedule, id)
     if not s: flash('Schedule not found.', 'danger'); return redirect(url_for('schedules'))
@@ -422,14 +465,14 @@ def assign_schedule(id):
     db.session.commit(); flash('Schedule assigned.', 'success'); return redirect(url_for('schedules'))
 
 @app.route('/schedules/<int:id>/delete', methods=['POST'])
-@login_required
+@admin_required
 def delete_schedule(id):
     s = db.session.get(Schedule, id)
     if s: db.session.delete(s); db.session.commit(); flash('Schedule deleted.', 'success')
     return redirect(url_for('schedules'))
 
 @app.route('/schedules/clear', methods=['POST'])
-@login_required
+@admin_required
 def clear_schedules():
     Schedule.query.delete(); db.session.commit(); flash('All schedules cleared.', 'success'); return redirect(url_for('schedules'))
 
@@ -443,7 +486,7 @@ def conflicts():
     return render_template('conflicts.html', rows=rows, total=len(rows))
 
 @app.route('/generate', methods=['POST'])
-@login_required
+@admin_required
 def generate():
     term = Term.query.first()
     if not term: flash('Create a term first.', 'danger'); return redirect(url_for('schedules'))
@@ -530,4 +573,4 @@ def download_pdf():
 
 if __name__ == '__main__':
     with app.app_context(): db.create_all()
-    app.run(debug=True)
+    app.run(debug=app.config['DEBUG'])

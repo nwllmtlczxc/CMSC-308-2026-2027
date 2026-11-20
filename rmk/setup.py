@@ -4,6 +4,9 @@ FILES = {
     "requirements.txt": """Flask==3.0.0
 Flask-SQLAlchemy==3.1.1
 Flask-Login==0.6.3
+Flask-WTF==1.2.2
+xhtml2pdf==0.2.17
+waitress>=3.0,<4
 """,
 
     "app.py": r'''"""
@@ -1128,7 +1131,104 @@ body { font-family: 'Inter', sans-serif; background-color: #f8f9fa; overflow-x: 
 '''
 }
 
+
+def harden_generated_files():
+    """Keep regenerated scaffold files aligned with app security settings."""
+    import re
+
+    generated_app = FILES["app.py"]
+    generated_app = generated_app.replace(
+        "import os\nfrom datetime import time, datetime",
+        "import os\nimport secrets\nfrom functools import wraps\nimport click\nfrom flask import abort\nfrom flask_wtf.csrf import CSRFProtect\nfrom datetime import time, datetime",
+        1,
+    )
+    generated_app = generated_app.replace(
+        "app = Flask(__name__)\napp.config['SECRET_KEY'] = 'cmsc308-group3-secret'\n",
+        """app = Flask(__name__)
+APP_ENV = os.environ.get('APP_ENV', 'development').lower()
+secret_key = os.environ.get('FLASK_SECRET_KEY')
+if APP_ENV == 'production' and not secret_key:
+    raise RuntimeError('FLASK_SECRET_KEY must be set when APP_ENV=production.')
+app.config['SECRET_KEY'] = secret_key or secrets.token_hex(32)
+app.config['DEBUG'] = APP_ENV == 'development' and os.environ.get('FLASK_DEBUG') == '1'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = APP_ENV == 'production'
+csrf = CSRFProtect(app)
+""",
+        1,
+    )
+    generated_app = generated_app.replace(
+        "login_manager.login_message_category = 'warning'\n",
+        """login_manager.login_message_category = 'warning'
+
+
+def admin_required(view):
+    @wraps(view)
+    @login_required
+    def wrapped_view(*args, **kwargs):
+        if current_user.role != 'Admin':
+            abort(403)
+        return view(*args, **kwargs)
+    return wrapped_view
+
+
+@app.cli.command('init-db')
+def init_db():
+    db.create_all()
+    click.echo('Database tables created.')
+
+
+@app.cli.command('make-admin')
+@click.argument('username')
+def make_admin(username):
+    user = User.query.filter_by(username=username).first()
+    if user is None:
+        raise click.ClickException(f'No account found for {username!r}.')
+    user.role = 'Admin'
+    db.session.commit()
+    click.echo(f'{username} is now an administrator.')
+""",
+        1,
+    )
+    admin_functions = {
+        'academic', 'add_course', 'delete_course', 'add_faculty', 'delete_faculty',
+        'add_room', 'delete_room', 'add_section', 'delete_section', 'add_term',
+        'delete_term', 'availability', 'add_availability', 'delete_availability',
+        'schedules', 'add_schedule', 'assign_schedule', 'delete_schedule',
+        'clear_schedules', 'generate'
+    }
+    for function_name in admin_functions:
+        pattern = re.compile(r"(@app\.route\([^\n]+\)\n)@login_required\n(def " + re.escape(function_name) + r"\()")
+        generated_app, count = pattern.subn(r"\1@admin_required\n\2", generated_app, count=1)
+        if count != 1:
+            raise RuntimeError(f'Could not secure generated route {function_name}')
+    generated_app = generated_app.replace("@app.route('/logout')\n@login_required", "@app.route('/logout', methods=['POST'])\n@login_required")
+    generated_app = generated_app.replace('app.run(debug=True)', "app.run(debug=app.config['DEBUG'])")
+    FILES['app.py'] = generated_app
+
+    form_pattern = re.compile(r"(<form\b[^>]*\bmethod\s*=\s*['\"]POST['\"][^>]*>)", re.IGNORECASE)
+    for filename, content in list(FILES.items()):
+        if filename.startswith('templates/') and filename.endswith('.html'):
+            content = form_pattern.sub(r"\1\n{{ csrf_token() }}", content)
+            if filename == 'templates/base.html':
+                content = content.replace(
+                    '<li class="nav-item"><a class="nav-link text-white" href="{{ url_for(\'schedules\') }}"><i class="bi bi-plus-square me-2"></i> Create Schedule</a></li>\n            <li class="nav-item"><a class="nav-link text-white" href="{{ url_for(\'availability\') }}"><i class="bi bi-display me-2"></i> Room Availability</a></li>',
+                    '{% if current_user.role == \'Admin\' %}\n            <li class="nav-item"><a class="nav-link text-white" href="{{ url_for(\'schedules\') }}"><i class="bi bi-plus-square me-2"></i> Create Schedule</a></li>\n            <li class="nav-item"><a class="nav-link text-white" href="{{ url_for(\'availability\') }}"><i class="bi bi-display me-2"></i> Room Availability</a></li>\n            {% endif %}'
+                )
+                content = content.replace(
+                    '<li class="nav-item mt-4"><hr class="text-light opacity-25"></li>\n            <li class="nav-item"><a class="nav-link text-white" href="{{ url_for(\'academic\') }}"><i class="bi bi-database me-2"></i> Master Data</a></li>',
+                    '{% if current_user.role == \'Admin\' %}\n            <li class="nav-item mt-4"><hr class="text-light opacity-25"></li>\n            <li class="nav-item"><a class="nav-link text-white" href="{{ url_for(\'academic\') }}"><i class="bi bi-database me-2"></i> Master Data</a></li>\n            {% endif %}'
+                )
+                content = content.replace(
+                    '<a class="nav-link text-white mb-3" href="{{ url_for(\'logout\') }}"><i class="bi bi-box-arrow-right me-2"></i> Logout</a>',
+                    '<form method="POST" action="{{ url_for(\'logout\') }}" class="mb-3">{{ csrf_token() }}<button type="submit" class="nav-link text-white w-100 text-start border-0 bg-transparent"><i class="bi bi-box-arrow-right me-2"></i> Logout</button></form>'
+                )
+            FILES[filename] = content
+
+
 def create_project():
+    harden_generated_files()
     print("Overwriting files with corrected Dashboard UI...")
     for filename, content in FILES.items():
         folder = os.path.dirname(filename)
