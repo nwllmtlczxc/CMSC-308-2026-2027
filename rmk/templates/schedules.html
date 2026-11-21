@@ -1,24 +1,27 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h2 class="fw-bold mb-0" style="color: #310742;">Create Schedule</h2>
+    <div>
+        <h2 class="fw-bold mb-0" style="color: #310742;">Create Schedule</h2>
+        <p class="text-muted small mb-0">Add course assignments, then let Auto-Generate choose available rooms and times.</p>
+    </div>
     <div>
         <form method="POST" action="{{ url_for('generate') }}" class="d-inline">
-{{ csrf_token() }}<button class="btn btn-orange">⚙ Auto-Generate</button></form>
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-orange">⚙ Auto-Generate</button></form>
         <form method="POST" action="{{ url_for('clear_schedules') }}" class="d-inline" onsubmit="return confirm('Clear ALL schedules?')">
-{{ csrf_token() }}<button class="btn btn-outline-danger">Clear All</button></form>
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-danger">Clear All</button></form>
     </div>
 </div>
 
 <div class="card custom-card p-4 mb-4">
     <form method="POST" action="{{ url_for('add_schedule') }}" class="row g-3 align-items-end">
-{{ csrf_token() }}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="col-md-3">
             <label class="form-label small fw-bold text-muted">Course</label>
             <select name="course_id" class="form-select" required>{% for c in courses %}<option value="{{ c.id }}">{{ c.code }} — {{ c.title }}</option>{% endfor %}</select>
         </div>
         <div class="col-md-3">
-            <label class="form-label small fw-bold text-muted">Faculty</label>
+            <label class="form-label small fw-bold text-muted">Professor</label>
             <select name="faculty_id" class="form-select" required>{% for f in faculty %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}</select>
         </div>
         <div class="col-md-3">
@@ -26,28 +29,11 @@
             <select name="section_id" class="form-select" required>{% for s in sections %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select>
         </div>
         <div class="col-md-3">
-            <label class="form-label small fw-bold text-muted">Room (Optional)</label>
-            <select name="room_id" class="form-select"><option value="">— Pending —</option>{% for r in rooms %}<option value="{{ r.id }}">{{ r.code }}</option>{% endfor %}</select>
-        </div>
-        
-        <div class="col-md-2">
-            <label class="form-label small fw-bold text-muted">Day</label>
-            <select name="day" class="form-select"><option value="">—</option>{% for d in days %}<option value="{{ d }}">{{ d }}</option>{% endfor %}</select>
-        </div>
-        <div class="col-md-2">
-            <label class="form-label small fw-bold text-muted">Start Time</label>
-            <input type="time" name="start_time" class="form-control">
-        </div>
-        <div class="col-md-2">
-            <label class="form-label small fw-bold text-muted">End Time</label>
-            <input type="time" name="end_time" class="form-control">
-        </div>
-        <div class="col-md-3">
             <label class="form-label small fw-bold text-muted">Term</label>
             <select name="term_id" class="form-select" required>{% for t in terms %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}</select>
         </div>
         <div class="col-md-3">
-            <button class="btn btn-purple w-100">Add Schedule</button>
+            <button class="btn btn-purple w-100">Add Assignment</button>
         </div>
     </form>
 </div>
@@ -55,7 +41,7 @@
 <div class="card custom-card p-4">
     <div class="table-responsive">
         <table class="table custom-table align-middle">
-            <thead><tr><th>Course</th><th>Faculty</th><th>Section</th><th>Room</th><th>Day</th><th>Time</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Course</th><th>Professor</th><th>Section</th><th>Room</th><th>Day</th><th>Time</th><th>Status</th><th></th></tr></thead>
             <tbody>
             {% for s in schedules %}
                 {% set status, messages = statuses[s.id] %}
@@ -72,30 +58,12 @@
                         {% else %}<span class="badge bg-success">Approved</span>{% endif %}
                     </td>
                     <td class="text-end">
-                        {% if s.is_pending %}<button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#assign{{ s.id }}">Assign</button>{% endif %}
                         <form method="POST" action="{{ url_for('delete_schedule', id=s.id) }}" class="d-inline" onsubmit="return confirm('Delete?')">
-{{ csrf_token() }}<button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form>
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form>
                     </td>
                 </tr>
-
-                {% if s.is_pending %}
-                <div class="modal fade" id="assign{{ s.id }}" tabindex="-1">
-                    <div class="modal-dialog">
-                        <div class="modal-content">
-                            <form method="POST" action="{{ url_for('assign_schedule', id=s.id) }}">
-{{ csrf_token() }}
-                                <div class="modal-header"><h5 class="modal-title">Assign Room & Time</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-                                <div class="modal-body">
-                                    <div class="mb-3"><label class="form-label fw-bold">Room</label><select name="room_id" class="form-select" required>{% for r in rooms %}<option value="{{ r.id }}">{{ r.code }} (Cap: {{ r.capacity }})</option>{% endfor %}</select></div>
-                                    <div class="mb-3"><label class="form-label fw-bold">Day</label><select name="day" class="form-select" required>{% for d in days %}<option value="{{ d }}">{{ d }}</option>{% endfor %}</select></div>
-                                    <div class="row"><div class="col-6"><label class="form-label fw-bold">Start</label><input type="time" name="start_time" class="form-control" required></div><div class="col-6"><label class="form-label fw-bold">End</label><input type="time" name="end_time" class="form-control" required></div></div>
-                                </div>
-                                <div class="modal-footer"><button class="btn btn-purple">Save</button></div>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-                {% endif %}
+            {% else %}
+                <tr><td colspan="8" class="text-center text-muted py-4">Add course, professor, section, and term assignments above, then click Auto-Generate.</td></tr>
             {% endfor %}
             </tbody>
         </table>

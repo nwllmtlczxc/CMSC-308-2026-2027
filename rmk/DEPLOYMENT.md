@@ -13,6 +13,8 @@ python app.py
 
 New registrations are Instructor accounts and cannot change schedules or master data. Promote the account that will administer the system with `python -m flask --app app make-admin YOUR_USERNAME`. The command only promotes an existing account.
 
+To generate schedules, add availability windows for professors and rooms, then add each course/professor/section/term assignment on the Create Schedule page. Auto-Generate assigns the day, time, and room; it will place a schedule only within any availability windows entered for that professor or room. Entities with no availability windows are unrestricted.
+
 For local debugging, set `$env:FLASK_DEBUG = '1'` before running `python app.py`. Debug mode is off by default.
 
 ## Production (Windows)

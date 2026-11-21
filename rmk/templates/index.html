@@ -1,91 +1,133 @@
 {% extends 'base.html' %}
-{% block content %}
-<div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-4">
-    <div>
-        <h3 class="fw-bold mb-1" style="color: #310742;">My Schedule</h3>
-        <p class="text-muted small mb-0 fst-italic">1st Semester 2026 - 2027</p>
-    </div>
-    
-    <!-- SECTION SELECTOR AND DOWNLOAD BUTTON -->
-    <div class="d-flex align-items-center gap-2">
-        <form method="GET" action="{{ url_for('index') }}" class="d-flex align-items-center">
-            <label class="me-2 fw-bold text-muted small">Section:</label>
-            <select name="section_id" class="form-select form-select-sm border-purple" onchange="this.form.submit()">
-                {% for sec in sections %}
-                    <option value="{{ sec.id }}" {% if selected_section and sec.id == selected_section.id %}selected{% endif %}>
-                        {{ sec.name }}
-                    </option>
-                {% endfor %}
-            </select>
-        </form>
-        
-        <a href="{{ url_for('download_pdf', section_id=selected_section.id if selected_section else '') }}" class="btn btn-orange shadow-sm py-2 px-3">
-            <i class="bi bi-file-earmark-pdf me-2"></i> Download PDF
-        </a>
-    </div>
-</div>
-
-<div class="row g-3 mb-4">
-    <div class="col-md-4">
-        <div class="card custom-card p-3 border-purple text-center">
-            <div class="card-body py-2">
-                <h6 class="text-muted fw-bold mb-2">Classes this week</h6>
-                <h2 class="fw-bold mb-0 text-purple" style="font-size: 2.5rem;">{{ stats.schedules }}</h2>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4">
-        <div class="card custom-card p-3 border-purple text-center">
-            <div class="card-body py-2">
-                <h6 class="text-muted fw-bold mb-2">Total Faculty</h6>
-                <h2 class="fw-bold mb-0 text-purple" style="font-size: 2.5rem;">{{ stats.faculty }}</h2>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4">
-        <div class="card custom-card p-3 bg-orange-subtle border-orange text-center">
-            <div class="card-body py-2">
-                <h6 class="text-muted fw-bold mb-2">Needs attention</h6>
-                <!-- Notice I separated the number and the word "pending" here -->
-                <h2 class="fw-bold mb-0 text-orange" style="font-size: 2.5rem;">
-                    {{ stats.pending }} <span style="font-size: 1.2rem; font-weight: 600;">pending</span>
-                </h2>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div class="card custom-card p-4">
-    <div class="table-responsive">
-        <table class="table table-borderless custom-timetable mb-0">
+{% macro schedule_grid(grid, view, days, time_slots) %}
+<div class="card custom-card p-3">
+    <div class="table-responsive schedule-grid-scroll">
+        <table class="table schedule-grid-table align-middle mb-0">
             <thead>
-                <tr>
-                    <th style="width: 80px;"></th>
-                    {% for d in days %}<th>{{ d }}</th>{% endfor %}
-                </tr>
+                <tr><th scope="col">Time</th>{% for day in days %}<th scope="col">{{ day }}</th>{% endfor %}</tr>
             </thead>
             <tbody>
             {% for start, end in time_slots %}
             <tr>
-                <td class="fw-bold text-muted small text-center align-middle">{{ start.strftime('%I:%M %p').lstrip('0') }}</td>
-                {% for d in days %}
-                    {% set cell = grid.get((d, start.strftime('%H:%M'))) %}
-                    <td class="p-1 position-relative">
-                        {% if cell %}
-                        <div class="schedule-block" title="{{ cell.faculty.name }}">
-    <div class="fw-bold">{{ cell.course.code }}</div>
-    <div class="small">{{ cell.faculty.name }}</div>
-    <div class="small opacity-75" style="font-size: 0.75rem;">{{ cell.section.name }} | {{ cell.room.code if cell.room else 'TBA' }}</div>
-</div>
+                <th scope="row" class="schedule-time">{{ start.strftime('%I:%M %p').lstrip('0') }} - {{ end.strftime('%I:%M %p').lstrip('0') }}</th>
+                {% for day in days %}
+                {% set entries = grid.get((day, start.strftime('%H:%M')), []) %}
+                <td>
+                    {% for schedule in entries %}
+                    <div class="schedule-block mb-1">
+                        <div class="fw-bold">{{ schedule.course.code }}</div>
+                        <div class="small">{{ schedule.course.title }}</div>
+                        {% if view == 'room' %}
+                        <div class="small mt-1">Section: {{ schedule.section.name }}</div>
+                        <div class="small">Professor: {{ schedule.faculty.name }}</div>
+                        {% elif view == 'professor' %}
+                        <div class="small mt-1">Section: {{ schedule.section.name }}</div>
+                        <div class="small">Room: {{ schedule.room.code }}</div>
                         {% else %}
-                        <div class="empty-slot"></div>
+                        <div class="small mt-1">Professor: {{ schedule.faculty.name }}</div>
+                        <div class="small">Room: {{ schedule.room.code }}</div>
                         {% endif %}
-                    </td>
+                    </div>
+                    {% else %}<div class="empty-slot" aria-hidden="true"></div>{% endfor %}
+                </td>
                 {% endfor %}
             </tr>
             {% endfor %}
             </tbody>
         </table>
     </div>
+</div>
+{% endmacro %}
+
+{% block content %}
+<div class="mb-3">
+    <h2 class="fw-bold mb-0" style="color: #310742;">Schedules</h2>
+    <p class="text-muted small mb-0 fst-italic">{{ term.name if term else 'No term available' }}</p>
+</div>
+
+<ul class="nav nav-pills custom-tabs mb-3" id="schedule-tabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="room-schedules-tab" data-bs-toggle="pill" data-bs-target="#room-schedules" type="button" role="tab" aria-controls="room-schedules" aria-selected="true">Room Schedules</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="professor-schedules-tab" data-bs-toggle="pill" data-bs-target="#professor-schedules" type="button" role="tab" aria-controls="professor-schedules" aria-selected="false">Professor Schedules</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="section-schedules-tab" data-bs-toggle="pill" data-bs-target="#section-schedules" type="button" role="tab" aria-controls="section-schedules" aria-selected="false">Section Schedules</button>
+    </li>
+</ul>
+
+<div class="tab-content" id="schedule-tabs-content">
+    <section class="tab-pane fade show active" id="room-schedules" role="tabpanel" aria-labelledby="room-schedules-tab" tabindex="0">
+        {% if rooms %}
+        <ul class="nav nav-pills custom-tabs mb-3" id="room-schedule-tabs" role="tablist">
+            {% for room in rooms %}
+            <li class="nav-item" role="presentation">
+                <button class="nav-link{% if loop.first %} active{% endif %}" id="room-tab-{{ room.id }}" data-bs-toggle="pill" data-bs-target="#room-pane-{{ room.id }}" type="button" role="tab" aria-controls="room-pane-{{ room.id }}" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ room.code }}</button>
+            </li>
+            {% endfor %}
+        </ul>
+        <div class="tab-content">
+            {% for room in rooms %}
+            {% set grid = room_grids.get(room.id, {}) %}
+            <section class="tab-pane fade{% if loop.first %} show active{% endif %}" id="room-pane-{{ room.id }}" role="tabpanel" aria-labelledby="room-tab-{{ room.id }}" tabindex="0">
+                {% if grid %}{{ schedule_grid(grid, 'room', days, time_slots) }}{% else %}
+                <div class="card custom-card p-4 text-center text-muted">No generated schedules for {{ room.code }} yet.</div>
+                {% endif %}
+            </section>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="card custom-card p-4 text-center text-muted">No rooms have been added yet.</div>
+        {% endif %}
+    </section>
+
+    <section class="tab-pane fade" id="professor-schedules" role="tabpanel" aria-labelledby="professor-schedules-tab" tabindex="0">
+        {% if faculty %}
+        <ul class="nav nav-pills custom-tabs mb-3" id="professor-schedule-tabs" role="tablist">
+            {% for professor in faculty %}
+            <li class="nav-item" role="presentation">
+                <button class="nav-link{% if loop.first %} active{% endif %}" id="professor-tab-{{ professor.id }}" data-bs-toggle="pill" data-bs-target="#professor-pane-{{ professor.id }}" type="button" role="tab" aria-controls="professor-pane-{{ professor.id }}" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ professor.name }}</button>
+            </li>
+            {% endfor %}
+        </ul>
+        <div class="tab-content">
+            {% for professor in faculty %}
+            {% set grid = professor_grids.get(professor.id, {}) %}
+            <section class="tab-pane fade{% if loop.first %} show active{% endif %}" id="professor-pane-{{ professor.id }}" role="tabpanel" aria-labelledby="professor-tab-{{ professor.id }}" tabindex="0">
+                {% if grid %}{{ schedule_grid(grid, 'professor', days, time_slots) }}{% else %}
+                <div class="card custom-card p-4 text-center text-muted">No generated schedules for {{ professor.name }} yet.</div>
+                {% endif %}
+            </section>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="card custom-card p-4 text-center text-muted">No professors have been added yet.</div>
+        {% endif %}
+    </section>
+
+    <section class="tab-pane fade" id="section-schedules" role="tabpanel" aria-labelledby="section-schedules-tab" tabindex="0">
+        {% if sections %}
+        <ul class="nav nav-pills custom-tabs mb-3" id="section-schedule-tabs" role="tablist">
+            {% for section in sections %}
+            <li class="nav-item" role="presentation">
+                <button class="nav-link{% if loop.first %} active{% endif %}" id="section-schedule-tab-{{ section.id }}" data-bs-toggle="pill" data-bs-target="#section-schedule-pane-{{ section.id }}" type="button" role="tab" aria-controls="section-schedule-pane-{{ section.id }}" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ section.name }}</button>
+            </li>
+            {% endfor %}
+        </ul>
+        <div class="tab-content">
+            {% for section in sections %}
+            {% set grid = section_grids.get(section.id, {}) %}
+            <section class="tab-pane fade{% if loop.first %} show active{% endif %}" id="section-schedule-pane-{{ section.id }}" role="tabpanel" aria-labelledby="section-schedule-tab-{{ section.id }}" tabindex="0">
+                {% if grid %}{{ schedule_grid(grid, 'section', days, time_slots) }}{% else %}
+                <div class="card custom-card p-4 text-center text-muted">No generated schedules for {{ section.name }} yet.</div>
+                {% endif %}
+            </section>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="card custom-card p-4 text-center text-muted">No sections have been added yet.</div>
+        {% endif %}
+    </section>
 </div>
 {% endblock %}

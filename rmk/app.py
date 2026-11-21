@@ -1,15 +1,14 @@
-
+"""
+CMSC 308 - Group 3
+Classroom Scheduling and Academic Timetabling System
+"""
 
 import os
 import secrets
 from functools import wraps
-
 import click
 from flask import abort
 from flask_wtf.csrf import CSRFProtect
-from xhtml2pdf import pisa
-from io import BytesIO
-from flask import make_response
 from datetime import time, datetime
 from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
@@ -40,7 +39,6 @@ login_manager.login_message_category = 'warning'
 
 
 def admin_required(view):
-    """Require an authenticated administrator for management actions."""
     @wraps(view)
     @login_required
     def wrapped_view(*args, **kwargs):
@@ -59,7 +57,6 @@ def init_db():
 @app.cli.command('make-admin')
 @click.argument('username')
 def make_admin(username):
-    """Promote an existing registered account to administrator."""
     user = User.query.filter_by(username=username).first()
     if user is None:
         raise click.ClickException(f'No account found for {username!r}.')
@@ -72,7 +69,7 @@ TIME_SLOTS = [
     (time(7, 0), time(8, 0)), (time(8, 0), time(9, 0)), (time(9, 0), time(10, 0)),
     (time(10, 0), time(11, 0)), (time(11, 0), time(12, 0)), (time(12, 0), time(13, 0)),
     (time(13, 0), time(14, 0)), (time(14, 0), time(15, 0)), (time(15, 0), time(16, 0)),
-    (time(16, 0), time(17, 0)),
+    (time(16, 0), time(17, 0)), (time(17, 0), time(18, 0)),
 ]
 
 class User(UserMixin, db.Model):
@@ -137,7 +134,12 @@ class Schedule(db.Model):
 
     @property
     def is_pending(self):
-        return self.room_id is None or self.day is None
+        return (
+            self.room_id is None
+            or self.day is None
+            or self.start_time is None
+            or self.end_time is None
+        )
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -166,38 +168,67 @@ def check_schedule_conflicts(new, existing_schedules, exclude_id=None):
         if new.get('section_id') and s.section_id == new['section_id']:
             conflicts.append(f"Section conflict: {s.section.name} already has {s.course.code} at {s.start_time.strftime('%H:%M')}")
 
-    for avail in Availability.query.filter_by(day=new['day']).all():
-        if not overlaps(new['start_time'], new['end_time'], avail.start_time, avail.end_time): continue
-        if avail.faculty_id and avail.faculty_id == new.get('faculty_id'):
-            conflicts.append(f"Faculty {avail.faculty.name} is unavailable at this time")
-        if avail.room_id and avail.room_id == new.get('room_id'):
-            conflicts.append(f"Room {avail.room.code} is unavailable at this time")
+    for entity_field, entity_label in (('faculty_id', 'Professor'), ('room_id', 'Room')):
+        entity_id = new.get(entity_field)
+        if entity_id is None:
+            continue
+        windows = Availability.query.filter_by(**{entity_field: entity_id}).all()
+        if windows and not any(
+            window.day == new['day']
+            and window.start_time <= new['start_time']
+            and window.end_time >= new['end_time']
+            for window in windows
+        ):
+            conflicts.append(
+                f"{entity_label} availability does not cover "
+                f"{new['day']} {new['start_time'].strftime('%H:%M')}-"
+                f"{new['end_time'].strftime('%H:%M')}"
+            )
     return conflicts
 
 def check_room_suitability(room, section, course):
     problems = []
     if room.capacity < section.size:
         problems.append(f"Room {room.code} capacity ({room.capacity}) is smaller than section {section.name} ({section.size})")
-    if course.room_type == 'lab' and room.room_type != 'lab':
-        problems.append(f"Course {course.code} requires a lab, but {room.code} is a {room.room_type} room")
+    if room.room_type != course.room_type:
+        problems.append(f"Course {course.code} requires a {course.room_type} room, but {room.code} is a {room.room_type} room")
     return problems
 
 def auto_generate(term_id):
-    pending = Schedule.query.filter_by(term_id=term_id, room_id=None).all()
+    pending = [
+        schedule for schedule in Schedule.query.filter_by(term_id=term_id).all()
+        if schedule.room_id is None
+        or schedule.day is None
+        or schedule.start_time is None
+        or schedule.end_time is None
+    ]
     pending.sort(key=lambda s: (0 if s.course.room_type == 'lab' else 1, -s.section.size))
     assigned_count, still_unassigned = 0, []
+    rooms = Room.query.order_by(Room.code).all()
+    existing = Schedule.query.filter(
+        Schedule.term_id == term_id,
+        Schedule.room_id.isnot(None),
+    ).all()
+    room_usage = {
+        room.id: sum(
+            1 for schedule in existing
+            if schedule.room_id == room.id and not schedule.is_pending
+        )
+        for room in rooms
+    }
 
     for sched in pending:
         placed = False
         for day in DAYS:
             for start, end in TIME_SLOTS:
-                for room in Room.query.all():
+                for room in sorted(rooms, key=lambda room: (room_usage[room.id], room.code)):
                     if check_room_suitability(room, sched.section, sched.course): continue
                     candidate = {'day': day, 'start_time': start, 'end_time': end, 'room_id': room.id, 'faculty_id': sched.faculty_id, 'section_id': sched.section_id, 'course_id': sched.course_id}
-                    existing = Schedule.query.filter(Schedule.term_id == term_id, Schedule.room_id.isnot(None)).all()
                     if not check_schedule_conflicts(candidate, existing, exclude_id=sched.id):
                         sched.day, sched.start_time, sched.end_time, sched.room_id = day, start, end, room.id
                         db.session.commit()
+                        existing.append(sched)
+                        room_usage[room.id] += 1
                         assigned_count += 1
                         placed = True
                         break
@@ -215,6 +246,13 @@ def build_timetable(schedules):
     grid = {}
     for s in schedules:
         if s.day and s.start_time: grid[(s.day, s.start_time.strftime('%H:%M'))] = s
+    return grid
+
+def build_schedule_grid(schedules):
+    grid = {}
+    for schedule in schedules:
+        key = (schedule.day, schedule.start_time.strftime('%H:%M'))
+        grid.setdefault(key, []).append(schedule)
     return grid
 
 # ============================================================
@@ -251,40 +289,43 @@ def logout():
     logout_user()
     return redirect(url_for('login'))
 
-
+# ============================================================
 # MAIN ROUTES
+# ============================================================
 @app.route('/')
 @login_required
 def index():
-    sections = Section.query.all()
-    
-    # Get the selected section from the URL (default to the first one)
-    section_id = request.args.get('section_id', type=int)
-    if not section_id and sections:
-        section_id = sections[0].id
-
-    # Only fetch schedules for the selected section
-    if section_id:
-        all_scheds = Schedule.query.filter(
-            Schedule.room_id.isnot(None),
-            Schedule.section_id == section_id
-        ).all()
-    else:
-        all_scheds = []
-
-    grid = build_timetable(all_scheds)
-    selected_section = db.session.get(Section, section_id) if section_id else None
-
-    stats = {
-        'courses': Course.query.count(), 
-        'faculty': Faculty.query.count(), 
-        'rooms': Room.query.count(), 
-        'sections': Section.query.count(), 
-        'schedules': len(all_scheds), 
-        'pending': Schedule.query.filter(Schedule.room_id.is_(None), Schedule.section_id == section_id).count() if section_id else 0
-    }
-    
-    return render_template('index.html', stats=stats, grid=grid, days=DAYS, time_slots=TIME_SLOTS, sections=sections, selected_section=selected_section)
+    schedules = Schedule.query.filter(
+        Schedule.room_id.isnot(None),
+        Schedule.day.isnot(None),
+        Schedule.start_time.isnot(None),
+        Schedule.end_time.isnot(None),
+    ).order_by(Schedule.start_time).all()
+    term = Term.query.order_by(Term.id.desc()).first()
+    rooms = Room.query.order_by(Room.code).all()
+    faculty = Faculty.query.order_by(Faculty.name).all()
+    sections = Section.query.order_by(Section.name).all()
+    return render_template(
+        'index.html',
+        rooms=rooms,
+        faculty=faculty,
+        sections=sections,
+        room_grids={
+            room.id: build_schedule_grid([s for s in schedules if s.room_id == room.id])
+            for room in rooms
+        },
+        professor_grids={
+            professor.id: build_schedule_grid([s for s in schedules if s.faculty_id == professor.id])
+            for professor in faculty
+        },
+        section_grids={
+            section.id: build_schedule_grid([s for s in schedules if s.section_id == section.id])
+            for section in sections
+        },
+        days=DAYS,
+        time_slots=TIME_SLOTS,
+        term=term,
+    )
 
 @app.route('/academic')
 @admin_required
@@ -409,16 +450,21 @@ def add_availability():
     kind, _, eid = entity.partition(':')
     try: eid = int(eid)
     except ValueError: flash('Invalid entity.', 'danger'); return redirect(url_for('availability'))
-    if kind == 'faculty': db.session.add(Availability(faculty_id=eid, day=day, start_time=start, end_time=end))
-    elif kind == 'room': db.session.add(Availability(room_id=eid, day=day, start_time=start, end_time=end))
-    db.session.commit(); flash('Unavailability block added.', 'success')
+    if kind == 'faculty' and db.session.get(Faculty, eid):
+        db.session.add(Availability(faculty_id=eid, day=day, start_time=start, end_time=end))
+    elif kind == 'room' and db.session.get(Room, eid):
+        db.session.add(Availability(room_id=eid, day=day, start_time=start, end_time=end))
+    else:
+        flash('Select a valid professor or room.', 'danger')
+        return redirect(url_for('availability'))
+    db.session.commit(); flash('Availability window added.', 'success')
     return redirect(url_for('availability'))
 
 @app.route('/availability/<int:id>/delete', methods=['POST'])
 @admin_required
 def delete_availability(id):
     a = db.session.get(Availability, id)
-    if a: db.session.delete(a); db.session.commit(); flash('Block removed.', 'success')
+    if a: db.session.delete(a); db.session.commit(); flash('Availability window removed.', 'success')
     return redirect(url_for('availability'))
 
 @app.route('/schedules')
@@ -431,24 +477,22 @@ def schedules():
         new = {'day': s.day, 'start_time': s.start_time, 'end_time': s.end_time, 'room_id': s.room_id, 'faculty_id': s.faculty_id, 'section_id': s.section_id, 'course_id': s.course_id}
         msgs = check_schedule_conflicts(new, all_scheds, exclude_id=s.id) + check_room_suitability(s.room, s.section, s.course)
         statuses[s.id] = ('ok' if not msgs else 'conflict', msgs)
-    return render_template('schedules.html', schedules=all_scheds, statuses=statuses, terms=Term.query.all(), courses=Course.query.order_by(Course.code).all(), faculty=Faculty.query.order_by(Faculty.name).all(), sections=Section.query.order_by(Section.name).all(), rooms=Room.query.order_by(Room.code).all(), days=DAYS)
+    return render_template('schedules.html', schedules=all_scheds, statuses=statuses, terms=Term.query.all(), courses=Course.query.order_by(Course.code).all(), faculty=Faculty.query.order_by(Faculty.name).all(), sections=Section.query.order_by(Section.name).all())
 
 @app.route('/schedules/add', methods=['POST'])
 @admin_required
 def add_schedule():
     try: term_id, course_id, faculty_id, section_id = int(request.form['term_id']), int(request.form['course_id']), int(request.form['faculty_id']), int(request.form['section_id'])
     except (KeyError, ValueError): flash('Select term, course, faculty, and section.', 'danger'); return redirect(url_for('schedules'))
-    room_raw, day = request.form.get('room_id', '').strip(), request.form.get('day', '').strip() or None
-    start, end = parse_time(request.form.get('start_time', '')), parse_time(request.form.get('end_time', ''))
-    if room_raw and day and start and end:
-        if start >= end: flash('Start must be before end.', 'danger'); return redirect(url_for('schedules'))
-        new = {'day': day, 'start_time': start, 'end_time': end, 'room_id': int(room_raw), 'faculty_id': faculty_id, 'section_id': section_id, 'course_id': course_id}
-        conflicts = check_schedule_conflicts(new, Schedule.query.all()) + check_room_suitability(db.session.get(Room, int(room_raw)), db.session.get(Section, section_id), db.session.get(Course, course_id))
-        if conflicts: flash(' | '.join(conflicts), 'danger'); return redirect(url_for('schedules'))
-        db.session.add(Schedule(term_id=term_id, course_id=course_id, faculty_id=faculty_id, section_id=section_id, room_id=int(room_raw), day=day, start_time=start, end_time=end))
-        db.session.commit(); flash('Schedule added.', 'success'); return redirect(url_for('schedules'))
+    if not all(db.session.get(model, identifier) for model, identifier in (
+        (Term, term_id), (Course, course_id), (Faculty, faculty_id), (Section, section_id)
+    )):
+        flash('Select an existing term, course, professor, and section.', 'danger')
+        return redirect(url_for('schedules'))
     db.session.add(Schedule(term_id=term_id, course_id=course_id, faculty_id=faculty_id, section_id=section_id))
-    db.session.commit(); flash('Pending schedule added.', 'info'); return redirect(url_for('schedules'))
+    db.session.commit()
+    flash('Schedule request added. Auto-Generate will choose an available time and room.', 'success')
+    return redirect(url_for('schedules'))
 
 @app.route('/schedules/<int:id>/assign', methods=['POST'])
 @admin_required
@@ -488,89 +532,55 @@ def conflicts():
 @app.route('/generate', methods=['POST'])
 @admin_required
 def generate():
-    term = Term.query.first()
-    if not term: flash('Create a term first.', 'danger'); return redirect(url_for('schedules'))
-    assigned, unassigned = auto_generate(term.id)
-    if assigned: flash(f'Auto-generator assigned {assigned} schedule(s).', 'success')
-    if unassigned: flash(f"Could not place: {', '.join(f'{s.course.code}/{s.section.name}' for s in unassigned)}", 'warning')
-    if not assigned and not unassigned: flash('No pending schedules to generate.', 'info')
+    terms = Term.query.order_by(Term.id).all()
+    if not terms:
+        flash('Create a term before generating schedules.', 'danger')
+        return redirect(url_for('schedules'))
+    pending = [
+        schedule for schedule in Schedule.query.all()
+        if schedule.room_id is None
+        or schedule.day is None
+        or schedule.start_time is None
+        or schedule.end_time is None
+    ]
+    if not pending:
+        flash('Add course, professor, section, and term assignments before generating schedules.', 'info')
+        return redirect(url_for('schedules'))
+    assigned_count, unassigned = 0, []
+    for term in terms:
+        assigned, term_unassigned = auto_generate(term.id)
+        assigned_count += assigned
+        unassigned.extend(term_unassigned)
+    if assigned_count:
+        flash(f'Auto-generator assigned {assigned_count} schedule(s).', 'success')
+    if unassigned:
+        flash(f"Could not place: {', '.join(f'{s.course.code}/{s.section.name}' for s in unassigned)}", 'warning')
     return redirect(url_for('schedules'))
 
 @app.route('/reports')
 @login_required
 def reports():
-    # 1. Default to 'section' view
-    view = request.args.get('view', 'section')
-    entity_id = request.args.get('entity_id', type=int)
-    
-    # 2. If no entity is selected, auto-pick the first section
-    if not entity_id and view == 'section':
-        first_sec = Section.query.first()
-        if first_sec: 
-            entity_id = first_sec.id
-            
+    view, entity_id = request.args.get('view', ''), request.args.get('entity_id', type=int)
     term_id = request.args.get('term_id', type=int) or (Term.query.first().id if Term.query.first() else None)
-    
-    # 3. Fetch the schedules
     selected_scheds, title = [], 'Select a view'
     if view and entity_id and term_id:
-        if view == 'section': 
-            selected_scheds = Schedule.query.filter_by(term_id=term_id, section_id=entity_id).all()
-            sec = db.session.get(Section, entity_id)
-            if sec: title = f"Timetable — Section {sec.name}"
-        elif view == 'faculty': 
-            selected_scheds = Schedule.query.filter_by(term_id=term_id, faculty_id=entity_id).all()
-            fac = db.session.get(Faculty, entity_id)
-            if fac: title = f"Timetable — {fac.name}"
-        elif view == 'room': 
-            selected_scheds = Schedule.query.filter_by(term_id=term_id, room_id=entity_id).all()
-            room = db.session.get(Room, entity_id)
-            if room: title = f"Timetable — Room {room.code}"
-            
+        if view == 'section': selected_scheds = Schedule.query.filter_by(term_id=term_id, section_id=entity_id).all(); title = f"Timetable — Section {db.session.get(Section, entity_id).name}"
+        elif view == 'faculty': selected_scheds = Schedule.query.filter_by(term_id=term_id, faculty_id=entity_id).all(); title = f"Timetable — {db.session.get(Faculty, entity_id).name}"
+        elif view == 'room': selected_scheds = Schedule.query.filter_by(term_id=term_id, room_id=entity_id).all(); title = f"Timetable — Room {db.session.get(Room, entity_id).code}"
     grid = build_timetable(selected_scheds)
-    
-    # 4. Generate reports data
     room_util, faculty_load, pending = [], [], []
     if term_id:
         total_slots = len(DAYS) * len(TIME_SLOTS)
-        for r in Room.query.all(): 
-            used = Schedule.query.filter_by(term_id=term_id, room_id=r.id).count()
-            room_util.append({'room': r, 'used': used, 'total': total_slots, 'pct': round((used / total_slots) * 100, 1)})
-        for f in Faculty.query.all(): 
-            faculty_load.append({'faculty': f, 'load': Schedule.query.filter_by(term_id=term_id, faculty_id=f.id).count()})
+        for r in Room.query.all(): room_util.append({'room': r, 'used': Schedule.query.filter_by(term_id=term_id, room_id=r.id).count(), 'total': total_slots, 'pct': round((Schedule.query.filter_by(term_id=term_id, room_id=r.id).count() / total_slots) * 100, 1)})
+        for f in Faculty.query.all(): faculty_load.append({'faculty': f, 'load': Schedule.query.filter_by(term_id=term_id, faculty_id=f.id).count()})
         pending = Schedule.query.filter_by(room_id=None).all()
-        
     return render_template('reports.html', view=view, entity_id=entity_id, title=title, sections=Section.query.all(), faculty=Faculty.query.all(), rooms=Room.query.all(), terms=Term.query.all(), term_id=term_id, grid=grid, days=DAYS, time_slots=TIME_SLOTS, room_util=room_util, faculty_load=faculty_load, pending=pending)
 
-@app.route('/download_pdf')
-@login_required
-def download_pdf():
-    section_id = request.args.get('section_id', type=int)
-    
-    if section_id:
-        all_scheds = Schedule.query.filter(Schedule.room_id.isnot(None), Schedule.section_id == section_id).all()
-        sec = db.session.get(Section, section_id)
-    else:
-        all_scheds = Schedule.query.filter(Schedule.room_id.isnot(None)).all()
-        sec = None
-        
-    grid = build_timetable(all_scheds)
-    term = Term.query.first()
-    
-    html = render_template('pdf_template.html', grid=grid, days=DAYS, time_slots=TIME_SLOTS, term=term, section=sec)
-    
-    result = BytesIO()
-    pdf = pisa.pisaDocument(BytesIO(html.encode("utf-8")), result)
-    
-    if not pdf.err:
-        response = make_response(result.getvalue())
-        response.headers['Content-Type'] = 'application/pdf'
-        response.headers['Content-Disposition'] = 'attachment; filename=Master_Timetable.pdf'
-        return response
-        
-    return "Error generating PDF", 400
-
-
 if __name__ == '__main__':
-    with app.app_context(): db.create_all()
+    with app.app_context():
+        db.create_all()
+        admin = User.query.filter_by(username='admin').first()
+        if admin and admin.role != 'Admin':
+            admin.role = 'Admin'
+            db.session.commit()
     app.run(debug=app.config['DEBUG'])
