@@ -27,9 +27,11 @@
             <li class="nav-item"><a class="nav-link text-white{% if request.endpoint == 'index' %} active{% endif %}" href="{{ url_for('index') }}" data-page-link><i class="bi bi-calendar-week me-2"></i> Schedules</a></li>
             {% if current_user.role == 'Admin' %}
             <li class="nav-item"><a class="nav-link text-white{% if request.endpoint in ['schedules', 'add_schedule', 'assign_schedule', 'delete_schedule', 'clear_schedules', 'generate'] %} active{% endif %}" href="{{ url_for('schedules') }}" data-page-link><i class="bi bi-plus-square me-2"></i> Create Schedule</a></li>
-            <li class="nav-item"><a class="nav-link text-white{% if request.endpoint in ['availability', 'add_availability', 'delete_availability'] %} active{% endif %}" href="{{ url_for('availability') }}" data-page-link><i class="bi bi-display me-2"></i> Room Availability</a></li>
+            <li class="nav-item"><a class="nav-link text-white{% if request.endpoint in ['availability', 'add_unavailability', 'delete_unavailability', 'assign_subject', 'remove_subject'] %} active{% endif %}" href="{{ url_for('availability') }}" data-page-link><i class="bi bi-person-check me-2"></i> Professors, Subjects &amp; Unavailability</a></li>
+            <li class="nav-item"><a class="nav-link text-white{% if request.endpoint in ['manage_sections', 'assign_section_subject', 'remove_section_subject'] %} active{% endif %}" href="{{ url_for('manage_sections') }}" data-page-link><i class="bi bi-collection me-2"></i> Manage Sections</a></li>
             {% endif %}
-            <li class="nav-item"><a class="nav-link text-white{% if request.endpoint == 'reports' %} active{% endif %}" href="{{ url_for('reports') }}" data-page-link><i class="bi bi-file-earmark-arrow-down me-2"></i> Export</a></li>
+            <li class="nav-item"><a class="nav-link text-white{% if request.endpoint == 'reports' and request.args.get('report', 'room-utilization') == 'room-utilization' %} active{% endif %}" href="{{ url_for('reports', report='room-utilization') }}" data-page-link><i class="bi bi-building me-2"></i> Room Utilization</a></li>
+            <li class="nav-item"><a class="nav-link text-white{% if request.endpoint == 'reports' and request.args.get('report', 'room-utilization') == 'faculty-load' %} active{% endif %}" href="{{ url_for('reports', report='faculty-load') }}" data-page-link><i class="bi bi-person-lines-fill me-2"></i> Faculty Load</a></li>
             
             {% if current_user.role == 'Admin' %}
             <li class="nav-item mt-4"><hr class="text-light opacity-25"></li>
@@ -43,7 +45,7 @@
 
     <!-- Main Content -->
     <div class="main-content w-100">
-        <div class="container-fluid p-4 page-content" id="page-content">
+        <div class="container-fluid p-4 page-content{% if request.endpoint == 'reports' %} reports-page{% elif request.endpoint in ['availability', 'add_unavailability', 'delete_unavailability', 'assign_subject', 'remove_subject'] %} professor-unavailability-page{% elif request.endpoint in ['manage_sections', 'assign_section_subject', 'remove_section_subject'] %} manage-sections-page{% endif %}" id="page-content">
             {% with messages = get_flashed_messages(with_categories=true) %}
                 {% if messages %}
                     {% for cat, msg in messages %}
@@ -81,13 +83,17 @@ async function loadPage(url, addHistory = true) {
         return;
     }
 
+    const destination = new URL(url, window.location.href);
     document.querySelector('#page-content').replaceWith(newContent);
     document.querySelectorAll('[data-page-link]').forEach(link => link.classList.remove('active'));
-    const activeLink = document.querySelector(`[data-page-link][href="${url}"]`);
+    const activeLink = Array.from(document.querySelectorAll('[data-page-link]'))
+        .find(link => link.href === destination.href);
     if (activeLink) activeLink.classList.add('active');
-
     if (addHistory) history.pushState({ url }, '', url);
-    window.scrollTo(0, 0);
+    const targetId = destination.hash.slice(1);
+    const target = targetId && document.getElementById(decodeURIComponent(targetId));
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    else window.scrollTo(0, 0);
 }
 
 document.querySelectorAll('[data-page-link]').forEach(link => {
@@ -96,6 +102,10 @@ document.querySelectorAll('[data-page-link]').forEach(link => {
         loadPage(link.href);
     });
 });
+
+const initialReportLink = Array.from(document.querySelectorAll('[data-page-link]'))
+    .find(link => link.href === window.location.href);
+if (initialReportLink) initialReportLink.classList.add('active');
 
 window.addEventListener('popstate', event => {
     loadPage(event.state?.url || window.location.pathname, false);

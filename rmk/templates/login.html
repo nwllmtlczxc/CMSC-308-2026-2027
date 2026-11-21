@@ -9,6 +9,14 @@
         <div class="col-md-6 d-flex align-items-center justify-content-center auth-bg">
             <div class="glass-card p-5 w-100" style="max-width: 450px;">
                 <h3 class="text-white text-center mb-4 fw-bold">Login</h3>
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ 'danger' if category == 'danger' else 'info' }} alert-dismissible fade show" role="alert">
+                            {{ message }}
+                            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                        </div>
+                    {% endfor %}
+                {% endwith %}
                 <form method="POST">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="mb-3">
