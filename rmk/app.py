@@ -65,12 +65,20 @@ def make_admin(username):
     click.echo(f'{username} is now an administrator.')
 
 DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+YEAR_LEVELS = [(1, '1st Year'), (2, '2nd Year'), (3, '3rd Year'), (4, '4th Year')]
+SCHOOL_START = time(7, 0)
+SCHOOL_END = time(16, 0)
 TIME_SLOTS = [
     (time(7, 0), time(8, 0)), (time(8, 0), time(9, 0)), (time(9, 0), time(10, 0)),
     (time(10, 0), time(11, 0)), (time(11, 0), time(12, 0)), (time(12, 0), time(13, 0)),
     (time(13, 0), time(14, 0)), (time(14, 0), time(15, 0)), (time(15, 0), time(16, 0)),
-    (time(16, 0), time(17, 0)), (time(17, 0), time(18, 0)),
 ]
+
+faculty_subjects = db.Table(
+    'faculty_subjects',
+    db.Column('faculty_id', db.Integer, db.ForeignKey('faculty.id'), primary_key=True),
+    db.Column('course_id', db.Integer, db.ForeignKey('course.id'), primary_key=True),
+)
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -90,6 +98,8 @@ class Course(db.Model):
     units = db.Column(db.Integer, default=3)
     room_type = db.Column(db.String(20), default='lecture')
     schedules = db.relationship('Schedule', backref='course', lazy=True)
+    professors = db.relationship('Faculty', secondary=faculty_subjects, back_populates='subjects')
+    section_subjects = db.relationship('SectionSubject', back_populates='course', cascade='all, delete-orphan')
 
 class Faculty(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -97,6 +107,8 @@ class Faculty(db.Model):
     department = db.Column(db.String(80))
     schedules = db.relationship('Schedule', backref='faculty', lazy=True)
     availabilities = db.relationship('Availability', backref='faculty', lazy=True)
+    unavailabilities = db.relationship('Unavailability', backref='faculty', lazy=True)
+    subjects = db.relationship('Course', secondary=faculty_subjects, back_populates='professors')
 
 class Room(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -112,11 +124,27 @@ class Section(db.Model):
     program = db.Column(db.String(50))
     size = db.Column(db.Integer, default=30)
     schedules = db.relationship('Schedule', backref='section', lazy=True)
+    section_subjects = db.relationship('SectionSubject', back_populates='section', cascade='all, delete-orphan')
+
+class SectionSubject(db.Model):
+    __tablename__ = 'section_subjects'
+    section_id = db.Column(db.Integer, db.ForeignKey('section.id'), primary_key=True)
+    course_id = db.Column(db.Integer, db.ForeignKey('course.id'), primary_key=True)
+    year_level = db.Column(db.Integer, nullable=False)
+    section = db.relationship('Section', back_populates='section_subjects')
+    course = db.relationship('Course', back_populates='section_subjects')
 
 class Availability(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     faculty_id = db.Column(db.Integer, db.ForeignKey('faculty.id'), nullable=True)
     room_id = db.Column(db.Integer, db.ForeignKey('room.id'), nullable=True)
+    day = db.Column(db.String(3), nullable=False)
+    start_time = db.Column(db.Time, nullable=False)
+    end_time = db.Column(db.Time, nullable=False)
+
+class Unavailability(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    faculty_id = db.Column(db.Integer, db.ForeignKey('faculty.id'), nullable=False)
     day = db.Column(db.String(3), nullable=False)
     start_time = db.Column(db.Time, nullable=False)
     end_time = db.Column(db.Time, nullable=False)
@@ -154,6 +182,8 @@ def check_schedule_conflicts(new, existing_schedules, exclude_id=None):
     conflicts = []
     if new.get('day') is None or new.get('start_time') is None or new.get('end_time') is None:
         return conflicts
+    if not SCHOOL_START <= new['start_time'] < new['end_time'] <= SCHOOL_END:
+        conflicts.append('Classes must be scheduled between 7:00 AM and 4:00 PM.')
 
     for s in existing_schedules:
         if s.id == exclude_id: continue
@@ -168,19 +198,16 @@ def check_schedule_conflicts(new, existing_schedules, exclude_id=None):
         if new.get('section_id') and s.section_id == new['section_id']:
             conflicts.append(f"Section conflict: {s.section.name} already has {s.course.code} at {s.start_time.strftime('%H:%M')}")
 
-    for entity_field, entity_label in (('faculty_id', 'Professor'), ('room_id', 'Room')):
-        entity_id = new.get(entity_field)
-        if entity_id is None:
-            continue
-        windows = Availability.query.filter_by(**{entity_field: entity_id}).all()
-        if windows and not any(
+    faculty_id = new.get('faculty_id')
+    if faculty_id is not None:
+        windows = Unavailability.query.filter_by(faculty_id=faculty_id).all()
+        if any(
             window.day == new['day']
-            and window.start_time <= new['start_time']
-            and window.end_time >= new['end_time']
+            and overlaps(new['start_time'], new['end_time'], window.start_time, window.end_time)
             for window in windows
         ):
             conflicts.append(
-                f"{entity_label} availability does not cover "
+                "Professor is unavailable during "
                 f"{new['day']} {new['start_time'].strftime('%H:%M')}-"
                 f"{new['end_time'].strftime('%H:%M')}"
             )
@@ -266,7 +293,7 @@ def login():
         if user and check_password_hash(user.password_hash, request.form.get('password')):
             login_user(user)
             return redirect(url_for('index'))
-        flash('Invalid username or password.', 'danger')
+        flash('Username or password is incorrect.', 'danger')
     return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -438,34 +465,148 @@ def delete_term(id):
 @app.route('/availability')
 @admin_required
 def availability():
-    return render_template('availability.html', availabilities=Availability.query.order_by(Availability.day).all(), faculty=Faculty.query.order_by(Faculty.name).all(), rooms=Room.query.order_by(Room.code).all(), days=DAYS)
+    return render_template(
+        'availability.html',
+        unavailabilities=Unavailability.query.order_by(Unavailability.day, Unavailability.start_time).all(),
+        faculty=Faculty.query.order_by(Faculty.name).all(),
+        courses=Course.query.order_by(Course.code).all(),
+        days=DAYS,
+    )
 
 @app.route('/availability/add', methods=['POST'])
 @admin_required
-def add_availability():
-    entity, day = request.form.get('entity', ''), request.form.get('day', '')
+def add_unavailability():
+    day = request.form.get('day', '')
     start, end = parse_time(request.form.get('start_time', '')), parse_time(request.form.get('end_time', ''))
-    if not entity or day not in DAYS or not start or not end or start >= end:
-        flash('Invalid entity, day, or time range.', 'danger'); return redirect(url_for('availability'))
-    kind, _, eid = entity.partition(':')
-    try: eid = int(eid)
-    except ValueError: flash('Invalid entity.', 'danger'); return redirect(url_for('availability'))
-    if kind == 'faculty' and db.session.get(Faculty, eid):
-        db.session.add(Availability(faculty_id=eid, day=day, start_time=start, end_time=end))
-    elif kind == 'room' and db.session.get(Room, eid):
-        db.session.add(Availability(room_id=eid, day=day, start_time=start, end_time=end))
-    else:
-        flash('Select a valid professor or room.', 'danger')
+    try:
+        faculty_id = int(request.form.get('faculty_id', ''))
+    except ValueError:
+        flash('Select a valid professor.', 'danger')
         return redirect(url_for('availability'))
-    db.session.commit(); flash('Availability window added.', 'success')
+    if not db.session.get(Faculty, faculty_id):
+        flash('Select a valid professor.', 'danger')
+        return redirect(url_for('availability'))
+    if day not in DAYS or not start or not end or start >= end:
+        flash('Invalid day or time range.', 'danger')
+        return redirect(url_for('availability'))
+    db.session.add(Unavailability(faculty_id=faculty_id, day=day, start_time=start, end_time=end))
+    db.session.commit(); flash('Professor unavailability added.', 'success')
     return redirect(url_for('availability'))
 
 @app.route('/availability/<int:id>/delete', methods=['POST'])
 @admin_required
-def delete_availability(id):
-    a = db.session.get(Availability, id)
-    if a: db.session.delete(a); db.session.commit(); flash('Availability window removed.', 'success')
+def delete_unavailability(id):
+    unavailability = db.session.get(Unavailability, id)
+    if not unavailability:
+        flash('Professor unavailability not found.', 'danger')
+        return redirect(url_for('availability'))
+    db.session.delete(unavailability); db.session.commit(); flash('Professor unavailability removed.', 'success')
     return redirect(url_for('availability'))
+
+@app.route('/availability/subjects/add', methods=['POST'])
+@admin_required
+def assign_subject():
+    try:
+        faculty_id = int(request.form.get('faculty_id', ''))
+        course_id = int(request.form.get('course_id', ''))
+    except ValueError:
+        flash('Select a valid professor and subject.', 'danger')
+        return redirect(url_for('availability'))
+    professor, subject = db.session.get(Faculty, faculty_id), db.session.get(Course, course_id)
+    if not professor or not subject:
+        flash('Select an existing professor and subject.', 'danger')
+        return redirect(url_for('availability'))
+    if subject in professor.subjects:
+        flash(f"{subject.code} is already assigned to {professor.name}.", 'warning')
+        return redirect(url_for('availability'))
+    professor.subjects.append(subject)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        flash(f"{subject.code} is already assigned to {professor.name}.", 'warning')
+        return redirect(url_for('availability'))
+    flash(f"{subject.code} assigned to {professor.name}.", 'success')
+    return redirect(url_for('availability'))
+
+@app.route('/availability/subjects/<int:faculty_id>/<int:course_id>/remove', methods=['POST'])
+@admin_required
+def remove_subject(faculty_id, course_id):
+    professor, subject = db.session.get(Faculty, faculty_id), db.session.get(Course, course_id)
+    if not professor or not subject or subject not in professor.subjects:
+        flash('Professor subject assignment not found.', 'danger')
+        return redirect(url_for('availability'))
+    professor.subjects.remove(subject)
+    db.session.commit()
+    flash(f"{subject.code} removed from {professor.name}.", 'success')
+    return redirect(url_for('availability'))
+
+@app.route('/manage-sections')
+@admin_required
+def manage_sections():
+    return render_template(
+        'manage_sections.html',
+        sections=Section.query.order_by(Section.name).all(),
+        courses=Course.query.order_by(Course.code).all(),
+        assignments=SectionSubject.query.order_by(SectionSubject.section_id, SectionSubject.year_level, SectionSubject.course_id).all(),
+        year_levels=YEAR_LEVELS,
+    )
+
+@app.route('/manage-sections/subjects/add', methods=['POST'])
+@admin_required
+def assign_section_subject():
+    try:
+        section_id = int(request.form.get('section_id', ''))
+        year_level = int(request.form.get('year_level', ''))
+        course_id = int(request.form.get('course_id', ''))
+    except ValueError:
+        flash('Select a valid section, year level, and subject.', 'danger')
+        return redirect(url_for('manage_sections'))
+    if year_level not in [level for level, _ in YEAR_LEVELS]:
+        flash('Select a valid year level.', 'danger')
+        return redirect(url_for('manage_sections'))
+    section, course = db.session.get(Section, section_id), db.session.get(Course, course_id)
+    if not section or not course:
+        flash('Select an existing section and subject.', 'danger')
+        return redirect(url_for('manage_sections'))
+
+    assignment = db.session.get(SectionSubject, (section_id, course_id))
+    if assignment and assignment.year_level == year_level:
+        flash(f"{course.code} is already assigned to {section.name} for year {year_level}.", 'warning')
+        return redirect(url_for('manage_sections'))
+    if assignment:
+        assignment.year_level = year_level
+        db.session.commit()
+        flash(f"{course.code} year updated for {section.name}.", 'success')
+        return redirect(url_for('manage_sections'))
+    db.session.add(SectionSubject(section_id=section_id, course_id=course_id, year_level=year_level))
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        flash(f"{course.code} is already assigned to {section.name}.", 'warning')
+        return redirect(url_for('manage_sections'))
+    flash(f"{course.code} assigned to {section.name} for year {year_level}.", 'success')
+    return redirect(url_for('manage_sections'))
+
+@app.route('/manage-sections/subjects/remove', methods=['POST'])
+@admin_required
+def remove_section_subject():
+    try:
+        section_id = int(request.form.get('section_id', ''))
+        course_id = int(request.form.get('course_id', ''))
+    except ValueError:
+        flash('Invalid section subject assignment.', 'danger')
+        return redirect(url_for('manage_sections'))
+    assignment = db.session.get(SectionSubject, (section_id, course_id))
+    if not assignment:
+        flash('Section subject assignment not found.', 'danger')
+        return redirect(url_for('manage_sections'))
+    course_code, section_name = assignment.course.code, assignment.section.name
+    db.session.delete(assignment)
+    db.session.commit()
+    flash(f"{course_code} removed from {section_name}.", 'success')
+    return redirect(url_for('manage_sections'))
 
 @app.route('/schedules')
 @admin_required
@@ -560,21 +701,23 @@ def generate():
 @app.route('/reports')
 @login_required
 def reports():
-    view, entity_id = request.args.get('view', ''), request.args.get('entity_id', type=int)
-    term_id = request.args.get('term_id', type=int) or (Term.query.first().id if Term.query.first() else None)
-    selected_scheds, title = [], 'Select a view'
-    if view and entity_id and term_id:
-        if view == 'section': selected_scheds = Schedule.query.filter_by(term_id=term_id, section_id=entity_id).all(); title = f"Timetable — Section {db.session.get(Section, entity_id).name}"
-        elif view == 'faculty': selected_scheds = Schedule.query.filter_by(term_id=term_id, faculty_id=entity_id).all(); title = f"Timetable — {db.session.get(Faculty, entity_id).name}"
-        elif view == 'room': selected_scheds = Schedule.query.filter_by(term_id=term_id, room_id=entity_id).all(); title = f"Timetable — Room {db.session.get(Room, entity_id).code}"
-    grid = build_timetable(selected_scheds)
-    room_util, faculty_load, pending = [], [], []
-    if term_id:
-        total_slots = len(DAYS) * len(TIME_SLOTS)
-        for r in Room.query.all(): room_util.append({'room': r, 'used': Schedule.query.filter_by(term_id=term_id, room_id=r.id).count(), 'total': total_slots, 'pct': round((Schedule.query.filter_by(term_id=term_id, room_id=r.id).count() / total_slots) * 100, 1)})
-        for f in Faculty.query.all(): faculty_load.append({'faculty': f, 'load': Schedule.query.filter_by(term_id=term_id, faculty_id=f.id).count()})
-        pending = Schedule.query.filter_by(room_id=None).all()
-    return render_template('reports.html', view=view, entity_id=entity_id, title=title, sections=Section.query.all(), faculty=Faculty.query.all(), rooms=Room.query.all(), terms=Term.query.all(), term_id=term_id, grid=grid, days=DAYS, time_slots=TIME_SLOTS, room_util=room_util, faculty_load=faculty_load, pending=pending)
+    report_type = request.args.get('report', 'room-utilization')
+    if report_type not in ('room-utilization', 'faculty-load'):
+        abort(404)
+    term = Term.query.first()
+    room_util, faculty_load = [], []
+    if term:
+        term_id = term.id
+        if report_type == 'room-utilization':
+            total_slots = len(DAYS) * len(TIME_SLOTS)
+            for r in Room.query.all():
+                used = Schedule.query.filter_by(term_id=term_id, room_id=r.id).count()
+                room_util.append({'room': r, 'used': used, 'total': total_slots, 'pct': round((used / total_slots) * 100, 1)})
+        else:
+            for f in Faculty.query.all():
+                load = Schedule.query.filter_by(term_id=term_id, faculty_id=f.id).count()
+                faculty_load.append({'faculty': f, 'load': load})
+    return render_template('reports.html', report_type=report_type, room_util=room_util, faculty_load=faculty_load)
 
 if __name__ == '__main__':
     with app.app_context():

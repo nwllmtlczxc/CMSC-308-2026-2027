@@ -1,0 +1,72 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2 class="fw-bold mb-0" style="color: #310742;">Create Schedule</h2>
+        <p class="text-muted small mb-0">Add course assignments, then let Auto-Generate choose available rooms and times between 7:00 AM and 4:00 PM.</p>
+    </div>
+    <div>
+        <form method="POST" action="{{ url_for('generate') }}" class="d-inline">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-orange">⚙ Auto-Generate</button></form>
+        <form method="POST" action="{{ url_for('clear_schedules') }}" class="d-inline" onsubmit="return confirm('Clear ALL schedules?')">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-danger">Clear All</button></form>
+    </div>
+</div>
+
+<div class="card custom-card p-4 mb-4">
+    <form method="POST" action="{{ url_for('add_schedule') }}" class="row g-3 align-items-end">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="col-md-3">
+            <label class="form-label small fw-bold text-muted">Course</label>
+            <select name="course_id" class="form-select" required>{% for c in courses %}<option value="{{ c.id }}">{{ c.code }} — {{ c.title }}</option>{% endfor %}</select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small fw-bold text-muted">Professor</label>
+            <select name="faculty_id" class="form-select" required>{% for f in faculty %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}</select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small fw-bold text-muted">Section</label>
+            <select name="section_id" class="form-select" required>{% for s in sections %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small fw-bold text-muted">Term</label>
+            <select name="term_id" class="form-select" required>{% for t in terms %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}</select>
+        </div>
+        <div class="col-md-3">
+            <button class="btn btn-purple w-100">Add Assignment</button>
+        </div>
+    </form>
+</div>
+
+<div class="card custom-card p-4">
+    <div class="table-responsive">
+        <table class="table custom-table align-middle">
+            <thead><tr><th>Course</th><th>Professor</th><th>Section</th><th>Room</th><th>Day</th><th>Time</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+            {% for s in schedules %}
+                {% set status, messages = statuses[s.id] %}
+                <tr>
+                    <td><strong>{{ s.course.code }}</strong><br><small class="text-muted">{{ s.course.title }}</small></td>
+                    <td>{{ s.faculty.name }}</td>
+                    <td>{{ s.section.name }}</td>
+                    <td>{% if s.room %}{{ s.room.code }}{% else %}<span class="text-muted">—</span>{% endif %}</td>
+                    <td>{{ s.day or '—' }}</td>
+                    <td>{% if s.start_time %}{{ s.start_time.strftime('%I:%M %p') }} - {{ s.end_time.strftime('%I:%M %p') }}{% else %}—{% endif %}</td>
+                    <td>
+                        {% if status == 'conflict' %}<span class="badge bg-danger mb-1">Conflict</span><div class="small text-danger">{% for m in messages %}<div>• {{ m }}</div>{% endfor %}</div>
+                        {% elif status == 'pending' %}<span class="badge bg-warning text-dark">Pending</span>
+                        {% else %}<span class="badge bg-success">Approved</span>{% endif %}
+                    </td>
+                    <td class="text-end">
+                        <form method="POST" action="{{ url_for('delete_schedule', id=s.id) }}" class="d-inline" onsubmit="return confirm('Delete?')">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form>
+                    </td>
+                </tr>
+            {% else %}
+                <tr><td colspan="8" class="text-center text-muted py-4">Add course, professor, section, and term assignments above, then click Auto-Generate.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

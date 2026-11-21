@@ -1,0 +1,123 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2 class="fw-bold mb-2" style="color: #310742;">Professors, Subjects &amp; Unavailability</h2>
+<p class="text-muted mb-4">Assign subjects to professors and record the days and times they cannot teach. If no unavailability windows are set, a professor can be scheduled at any time.</p>
+
+<div class="row g-4 mb-4">
+    <div class="col-xl-6">
+        <div class="card custom-card p-4 h-100">
+            <h5 class="fw-bold mb-3" style="color: #310742;">Assign a Subject</h5>
+            <form method="POST" action="{{ url_for('assign_subject') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="mb-3">
+                    <label for="subject-professor" class="form-label small fw-bold text-muted">Professor</label>
+                    <select id="subject-professor" name="faculty_id" class="form-select" required>
+                        <option value="">Select a professor</option>
+                        {% for professor in faculty %}<option value="{{ professor.id }}">{{ professor.name }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label for="subject-course" class="form-label small fw-bold text-muted">Subject</label>
+                    <select id="subject-course" name="course_id" class="form-select" required>
+                        <option value="">Select a subject</option>
+                        {% for course in courses %}<option value="{{ course.id }}">{{ course.code }} — {{ course.title }}</option>{% endfor %}
+                    </select>
+                </div>
+                <button class="btn btn-purple w-100">Assign Subject</button>
+            </form>
+        </div>
+    </div>
+    <div class="col-xl-6">
+        <div class="card custom-card p-4 h-100">
+            <h5 class="fw-bold mb-3" style="color: #310742;">Set Professor Unavailability</h5>
+            <form method="POST" action="{{ url_for('add_unavailability') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="mb-3">
+                    <label for="unavailability-professor" class="form-label small fw-bold text-muted">Professor</label>
+                    <select id="unavailability-professor" name="faculty_id" class="form-select" required>
+                        <option value="">Select a professor</option>
+                        {% for professor in faculty %}<option value="{{ professor.id }}">{{ professor.name }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label for="unavailability-day" class="form-label small fw-bold text-muted">Day</label>
+                    <select id="unavailability-day" name="day" class="form-select" required>
+                        {% for day in days %}<option value="{{ day }}">{{ day }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="row g-3 mb-4">
+                    <div class="col-sm-6">
+                        <label for="unavailability-start" class="form-label small fw-bold text-muted">Start Time</label>
+                        <input id="unavailability-start" type="time" name="start_time" class="form-control" required>
+                    </div>
+                    <div class="col-sm-6">
+                        <label for="unavailability-end" class="form-label small fw-bold text-muted">End Time</label>
+                        <input id="unavailability-end" type="time" name="end_time" class="form-control" required>
+                    </div>
+                </div>
+                <button class="btn btn-purple w-100">Add Unavailability</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-xl-6">
+        <div class="card custom-card p-4 h-100">
+            <h5 class="fw-bold mb-3" style="color: #310742;">Professor Subjects</h5>
+            <div class="table-responsive">
+                <table class="table custom-table">
+                    <thead><tr><th>Professor</th><th>Subject</th><th></th></tr></thead>
+                    <tbody>
+                    {% for professor in faculty %}
+                        {% for subject in professor.subjects %}
+                        <tr>
+                            <td class="fw-bold">{{ professor.name }}</td>
+                            <td>{{ subject.code }} — {{ subject.title }}</td>
+                            <td class="text-end">
+                                <form method="POST" action="{{ url_for('remove_subject', faculty_id=professor.id, course_id=subject.id) }}">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button class="btn btn-sm btn-outline-danger">Remove</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr><td class="fw-bold">{{ professor.name }}</td><td colspan="2" class="text-muted">No subjects assigned</td></tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr><td colspan="3" class="text-center text-muted py-4">No professors have been added.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-6">
+        <div class="card custom-card p-4 h-100">
+            <h5 class="fw-bold mb-3" style="color: #310742;">Professor Unavailability</h5>
+            <div class="table-responsive">
+                <table class="table custom-table">
+                    <thead><tr><th>Professor</th><th>Day</th><th>Time</th><th></th></tr></thead>
+                    <tbody>
+                    {% for unavailability in unavailabilities %}
+                    <tr>
+                        <td class="fw-bold">{{ unavailability.faculty.name }}</td>
+                        <td>{{ unavailability.day }}</td>
+                        <td>{{ unavailability.start_time.strftime('%I:%M %p') }} - {{ unavailability.end_time.strftime('%I:%M %p') }}</td>
+                        <td class="text-end">
+                            <form method="POST" action="{{ url_for('delete_unavailability', id=unavailability.id) }}">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button class="btn btn-sm btn-outline-danger">Remove</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="4" class="text-center text-muted py-4">No professor unavailability has been set.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

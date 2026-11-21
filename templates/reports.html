@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2 class="fw-bold mb-4" style="color: #310742;">{{ 'Room Utilization' if report_type == 'room-utilization' else 'Faculty Load' }}</h2>
+
+{% if report_type == 'room-utilization' %}
+<div class="card custom-card p-4">
+    <div class="table-responsive">
+        <table class="table custom-table table-sm">
+            <thead><tr><th>Room</th><th>Classes</th><th>Utilization</th></tr></thead>
+            <tbody>{% for u in room_util %}<tr><td class="fw-bold">{{ u.room.code }}</td><td>{{ u.used }} / {{ u.total }}</td><td><div class="progress" style="height:10px;"><div class="progress-bar bg-purple" style="width: {{ u.pct }}%"></div></div></td></tr>{% endfor %}</tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="card custom-card p-4">
+    <div class="table-responsive">
+        <table class="table custom-table table-sm">
+            <thead><tr><th>Instructor</th><th>Total Classes</th></tr></thead>
+            <tbody>{% for f in faculty_load %}<tr><td class="fw-bold">{{ f.faculty.name }}</td><td><span class="badge bg-purple">{{ f.load }}</span></td></tr>{% endfor %}</tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

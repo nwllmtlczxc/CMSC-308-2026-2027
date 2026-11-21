@@ -22,6 +22,9 @@ body { font-family: 'Inter', sans-serif; background-color: #f8f9fa; overflow-x: 
 
 .main-content { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 .page-content { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+.page-content.reports-page { overflow-y: auto; }
+.page-content.professor-unavailability-page { overflow-y: auto; }
+.page-content.manage-sections-page { overflow-y: auto; }
 
 /* Auth Pages */
 .auth-wrapper { height: 100vh; background: #1a0826; }
