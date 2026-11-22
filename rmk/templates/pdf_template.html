@@ -36,16 +36,16 @@
             <tr>
                 <td><b>{{ start.strftime('%I:%M %p') }}</b><br>to<br>{{ end.strftime('%I:%M %p') }}</td>
                 {% for d in days %}
-                    {% set cell = grid.get((d, start.strftime('%H:%M'))) %}
+                    {% set cells = grid.get((d, start.strftime('%H:%M')), []) %}
                     <td>
-                        {% if cell %}
+                        {% if cells %}{% for cell in cells %}
                         <div class="course-block">
                             <b>{{ cell.course.code }}</b><br>
                             {{ cell.section.name }}<br>
                             {{ cell.faculty.name }}<br>
                             Room: {{ cell.room.code }}
                         </div>
-                        {% endif %}
+                        {% endfor %}{% endif %}
                     </td>
                 {% endfor %}
             </tr>

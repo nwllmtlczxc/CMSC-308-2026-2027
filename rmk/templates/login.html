@@ -4,21 +4,21 @@
     <div class="row g-0 h-100">
         <div class="col-md-6 d-none d-md-flex flex-column justify-content-center align-items-center text-white p-5" style="background: linear-gradient(135deg, #2b0f3c 0%, #1a0826 100%);">
             <h1 class="display-4 fw-bold mb-4" style="line-height: 1.2;">Manage Syncing<br>Your <span class="text-orange">College</span><br><span class="text-purple">Class Schedule</span></h1>
-            <h1 class="display-3 fw-bold mt-4"><span class="text-orange">LSPU</span> <span class="text-purple">Sync.</span></h1>
+            <div class="d-flex align-items-center justify-content-center mt-4">
+    <img src="{{ url_for('static', filename='images/logo.png') }}" alt="LSPU Logo" style="width: 100px; margin-right: 15px;">
+    <h1 class="display-3 fw-bold mb-0"><span class="text-orange">LSPU</span> <span class="text-purple">Sync.</span></h1>
+</div>
         </div>
         <div class="col-md-6 d-flex align-items-center justify-content-center auth-bg">
             <div class="glass-card p-5 w-100" style="max-width: 450px;">
                 <h3 class="text-white text-center mb-4 fw-bold">Login</h3>
-                {% with messages = get_flashed_messages(with_categories=true) %}
+                {% with messages = get_flashed_messages(with_categories=true, category_filter=['register-success', 'login-error']) %}
                     {% for category, message in messages %}
-                        <div class="alert alert-{{ 'danger' if category == 'danger' else 'info' }} alert-dismissible fade show" role="alert">
-                            {{ message }}
-                            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                        </div>
+                        <div class="alert alert-{{ 'success' if category == 'register-success' else 'danger' }}" role="alert">{{ message }}</div>
                     {% endfor %}
                 {% endwith %}
                 <form method="POST">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="mb-3">
                         <input type="text" name="username" class="form-control glass-input" placeholder="Email or Username" required>
                     </div>
