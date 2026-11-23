@@ -9,7 +9,7 @@ from functools import wraps
 import click
 from flask import abort
 from flask_wtf.csrf import CSRFProtect
-from datetime import time, datetime
+from datetime import time, datetime, timedelta
 from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.exc import IntegrityError
@@ -65,7 +65,6 @@ def make_admin(username):
     click.echo(f'{username} is now an administrator.')
 
 DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-YEAR_LEVELS = [(1, '1st Year'), (2, '2nd Year'), (3, '3rd Year'), (4, '4th Year')]
 SCHOOL_START = time(7, 0)
 SCHOOL_END = time(16, 0)
 TIME_SLOTS = [
@@ -130,7 +129,7 @@ class SectionSubject(db.Model):
     __tablename__ = 'section_subjects'
     section_id = db.Column(db.Integer, db.ForeignKey('section.id'), primary_key=True)
     course_id = db.Column(db.Integer, db.ForeignKey('course.id'), primary_key=True)
-    year_level = db.Column(db.Integer, nullable=False)
+    year_level = db.Column(db.Integer, nullable=False, default=1)
     section = db.relationship('Section', back_populates='section_subjects')
     course = db.relationship('Course', back_populates='section_subjects')
 
@@ -187,6 +186,7 @@ def check_schedule_conflicts(new, existing_schedules, exclude_id=None):
 
     for s in existing_schedules:
         if s.id == exclude_id: continue
+        if new.get('term_id') is not None and s.term_id != new['term_id']: continue
         if s.day is None or s.start_time is None or s.end_time is None: continue
         if s.day != new['day']: continue
         if not overlaps(new['start_time'], new['end_time'], s.start_time, s.end_time): continue
@@ -211,6 +211,16 @@ def check_schedule_conflicts(new, existing_schedules, exclude_id=None):
                 f"{new['day']} {new['start_time'].strftime('%H:%M')}-"
                 f"{new['end_time'].strftime('%H:%M')}"
             )
+    room_id = new.get('room_id')
+    if room_id is not None:
+        availability = Availability.query.filter_by(room_id=room_id).all()
+        if availability and not any(
+            window.day == new['day']
+            and window.start_time <= new['start_time']
+            and window.end_time >= new['end_time']
+            for window in availability
+        ):
+            conflicts.append('Room is outside its available time window.')
     return conflicts
 
 def check_room_suitability(room, section, course):
@@ -221,48 +231,224 @@ def check_room_suitability(room, section, course):
         problems.append(f"Course {course.code} requires a {course.room_type} room, but {room.code} is a {room.room_type} room")
     return problems
 
-def auto_generate(term_id):
-    pending = [
-        schedule for schedule in Schedule.query.filter_by(term_id=term_id).all()
-        if schedule.room_id is None
-        or schedule.day is None
-        or schedule.start_time is None
-        or schedule.end_time is None
-    ]
-    pending.sort(key=lambda s: (0 if s.course.room_type == 'lab' else 1, -s.section.size))
-    assigned_count, still_unassigned = 0, []
-    rooms = Room.query.order_by(Room.code).all()
-    existing = Schedule.query.filter(
-        Schedule.term_id == term_id,
-        Schedule.room_id.isnot(None),
-    ).all()
-    room_usage = {
-        room.id: sum(
-            1 for schedule in existing
-            if schedule.room_id == room.id and not schedule.is_pending
-        )
-        for room in rooms
+class AutoGenerateResult:
+    def __init__(self, assigned, unassigned, missing_instructors, fallback_schedules=None):
+        self.assigned = assigned
+        self.unassigned = unassigned
+        self.missing_instructors = missing_instructors
+        self.fallback_schedules = fallback_schedules or []
+
+    def __iter__(self):
+        return iter((self.assigned, self.unassigned))
+
+
+def auto_generate(term_id, faculty_id=None):
+    term_schedules = Schedule.query.filter_by(term_id=term_id).all()
+    existing = [schedule for schedule in term_schedules if not schedule.is_pending]
+    completed_keys = {
+        (schedule.section_id, schedule.course_id)
+        for schedule in term_schedules if not schedule.is_pending
+    }
+    pending_by_key = {
+        (schedule.section_id, schedule.course_id): schedule
+        for schedule in term_schedules if schedule.is_pending
     }
 
-    for sched in pending:
-        placed = False
-        for day in DAYS:
-            for start, end in TIME_SLOTS:
-                for room in sorted(rooms, key=lambda room: (room_usage[room.id], room.code)):
-                    if check_room_suitability(room, sched.section, sched.course): continue
-                    candidate = {'day': day, 'start_time': start, 'end_time': end, 'room_id': room.id, 'faculty_id': sched.faculty_id, 'section_id': sched.section_id, 'course_id': sched.course_id}
-                    if not check_schedule_conflicts(candidate, existing, exclude_id=sched.id):
-                        sched.day, sched.start_time, sched.end_time, sched.room_id = day, start, end, room.id
-                        db.session.commit()
-                        existing.append(sched)
-                        room_usage[room.id] += 1
-                        assigned_count += 1
-                        placed = True
-                        break
-                if placed: break
-            if placed: break
-        if not placed: still_unassigned.append(sched)
-    return assigned_count, still_unassigned
+    tasks = []
+    missing_instructors = []
+    fallback_schedules = []
+    requirements = SectionSubject.query.order_by(
+        SectionSubject.section_id, SectionSubject.course_id
+    ).all()
+    requirement_keys = set()
+    processed_pending = set()
+
+    for requirement in requirements:
+        key = (requirement.section_id, requirement.course_id)
+        requirement_keys.add(key)
+        if key in completed_keys:
+            continue
+        if faculty_id is not None and not any(
+            professor.id == faculty_id for professor in requirement.course.professors
+        ):
+            continue
+        if key in pending_by_key:
+            schedule = pending_by_key[key]
+            processed_pending.add(key)
+        else:
+            schedule = Schedule(
+                term_id=term_id,
+                course_id=requirement.course_id,
+                section_id=requirement.section_id,
+            )
+        tasks.append({
+            'schedule': schedule,
+            'course': requirement.course,
+            'section': requirement.section,
+        })
+
+    for key, schedule in pending_by_key.items():
+        if key not in processed_pending and key not in requirement_keys:
+            if faculty_id is not None and not any(
+                professor.id == faculty_id for professor in schedule.course.professors
+            ):
+                continue
+            tasks.append({
+                'schedule': schedule,
+                'course': schedule.course,
+                'section': schedule.section,
+            })
+
+    rooms = Room.query.order_by(Room.code).all()
+    faculty_unavailability = {
+        faculty.id: faculty.unavailabilities for faculty in Faculty.query.all()
+    }
+    room_availability = {room.id: room.availabilities for room in rooms}
+    slots = [start for start, _ in TIME_SLOTS]
+
+    for task in tasks:
+        course = task['course']
+        schedule = task['schedule']
+        schedule.room_id = None
+        schedule.day = None
+        schedule.start_time = None
+        schedule.end_time = None
+        eligible = list(course.professors)
+        if faculty_id is not None:
+            eligible.sort(key=lambda professor: professor.id != faculty_id)
+        elif schedule.id and schedule.faculty_id:
+            eligible.sort(key=lambda professor: professor.id != schedule.faculty_id)
+        if not eligible:
+            missing_instructors.append(f'{course.code}/{task["section"].name}')
+            task['placements'] = []
+            task['missing_instructor'] = True
+            continue
+
+        schedule.faculty_id = eligible[0].id
+        duration = max(1, int(course.units or 1))
+        end_delta = timedelta(hours=duration)
+        placements = []
+        for professor in eligible:
+            for room in rooms:
+                if check_room_suitability(room, task['section'], course):
+                    continue
+                r_windows = room_availability[room.id]
+                p_unavailable = faculty_unavailability[professor.id]
+                for day in DAYS:
+                    for start in slots:
+                        end = (datetime.combine(datetime.today(), start) + end_delta).time()
+                        if end > SCHOOL_END:
+                            continue
+                        if any(
+                            window.day == day and overlaps(start, end, window.start_time, window.end_time)
+                            for window in p_unavailable
+                        ):
+                            continue
+                        if r_windows and not any(
+                            window.day == day and window.start_time <= start and window.end_time >= end
+                            for window in r_windows
+                        ):
+                            continue
+                        candidate = {
+                            'term_id': term_id,
+                            'day': day,
+                            'start_time': start,
+                            'end_time': end,
+                            'room_id': room.id,
+                            'faculty_id': professor.id,
+                            'section_id': task['section'].id,
+                        }
+                        if any(
+                            schedule.day == day
+                            and schedule.start_time is not None
+                            and schedule.end_time is not None
+                            and overlaps(start, end, schedule.start_time, schedule.end_time)
+                            and (
+                                schedule.faculty_id == professor.id
+                                or schedule.room_id == room.id
+                                or schedule.section_id == task['section'].id
+                            )
+                            for schedule in existing
+                        ):
+                            continue
+                        placements.append((candidate, professor, room))
+        task['placements'] = placements
+
+    tasks.sort(key=lambda task: (
+        len(task['placements']),
+        -(task['course'].units or 1),
+        0 if task['course'].room_type == 'lab' else 1,
+        -task['section'].size,
+    ))
+
+    planned = []
+    assigned_count = 0
+    still_unassigned = []
+    professor_load = {
+        professor.id: sum(1 for schedule in existing if schedule.faculty_id == professor.id)
+        for professor in Faculty.query.all()
+    }
+    room_load = {
+        room.id: sum(1 for schedule in existing if schedule.room_id == room.id)
+        for room in rooms
+    }
+    for task in tasks:
+        if task.get('missing_instructor'):
+            if task['schedule'] in term_schedules:
+                still_unassigned.append(task['schedule'])
+            continue
+        chosen = None
+        placements = sorted(
+            task['placements'],
+            key=lambda placement: (
+                faculty_id is not None and placement[1].id != faculty_id,
+                professor_load[placement[1].id],
+                room_load[placement[2].id],
+                DAYS.index(placement[0]['day']),
+                placement[0]['start_time'],
+            ),
+        )
+        for candidate, professor, room in placements:
+            if any(
+                candidate['day'] == other['day']
+                and overlaps(
+                    candidate['start_time'], candidate['end_time'],
+                    other['start_time'], other['end_time'],
+                )
+                and (
+                    candidate['faculty_id'] == other['faculty_id']
+                    or candidate['room_id'] == other['room_id']
+                    or candidate['section_id'] == other['section_id']
+                )
+                for other in planned
+            ):
+                continue
+            chosen = (candidate, professor, room)
+            break
+
+        schedule = task['schedule']
+        if chosen:
+            candidate, professor, room = chosen
+            schedule.faculty_id = professor.id
+            schedule.day = candidate['day']
+            schedule.start_time = candidate['start_time']
+            schedule.end_time = candidate['end_time']
+            schedule.room_id = room.id
+            planned.append(candidate)
+            professor_load[professor.id] += 1
+            room_load[room.id] += 1
+            assigned_count += 1
+            if faculty_id is not None and professor.id != faculty_id:
+                fallback_schedules.append(schedule)
+        else:
+            still_unassigned.append(schedule)
+        if schedule not in term_schedules:
+            db.session.add(schedule)
+
+    db.session.commit()
+    return AutoGenerateResult(
+        assigned_count, still_unassigned, missing_instructors, fallback_schedules
+    )
 
 def parse_time(value):
     if not value: return None
@@ -315,19 +501,58 @@ def logout():
 @app.route('/')
 @login_required
 def index():
-    # Get all schedules for the dashboard view
-    all_scheds = Schedule.query.filter(Schedule.room_id.isnot(None)).all()
-    grid = build_timetable(all_scheds)
-    
+    faculty = Faculty.query.order_by(Faculty.name).all()
+    sections = Section.query.order_by(Section.name).all()
+    rooms = Room.query.order_by(Room.code).all()
+    selected_faculty_id = request.args.get('faculty_id', type=int)
+    selected_section_id = request.args.get('section_id', type=int)
+    selected_room_id = request.args.get('room_id', type=int)
+    selected_faculty = db.session.get(Faculty, selected_faculty_id) if selected_faculty_id else None
+    selected_section = db.session.get(Section, selected_section_id) if selected_section_id else None
+    selected_room = db.session.get(Room, selected_room_id) if selected_room_id else None
+    all_schedules = Schedule.query.order_by(Schedule.day, Schedule.start_time).all()
+    scheduled_classes = [schedule for schedule in all_schedules if schedule.room_id is not None]
+    grid = build_timetable(scheduled_classes)
+    faculty_schedules = [
+        schedule for schedule in all_schedules
+        if selected_faculty and schedule.faculty_id == selected_faculty.id
+    ]
+    section_schedules = [
+        schedule for schedule in all_schedules
+        if selected_section and schedule.section_id == selected_section.id
+    ]
+    room_schedules = [
+        schedule for schedule in all_schedules
+        if selected_room and schedule.room_id == selected_room.id
+    ]
+    selected_schedules = (
+        faculty_schedules if selected_faculty
+        else section_schedules if selected_section
+        else room_schedules if selected_room
+        else []
+    )
+    selected_grid = build_timetable([
+        schedule for schedule in selected_schedules if schedule.room_id is not None
+    ])
+
     stats = {
         'courses': Course.query.count(), 
         'faculty': Faculty.query.count(), 
         'rooms': Room.query.count(), 
         'sections': Section.query.count(), 
-        'schedules': len(all_scheds), 
+        'schedules': len(scheduled_classes),
         'pending': Schedule.query.filter_by(room_id=None).count()
     }
-    return render_template('index.html', stats=stats, grid=grid, days=DAYS, time_slots=TIME_SLOTS)
+    return render_template(
+        'index.html', stats=stats, grid=grid, days=DAYS, time_slots=TIME_SLOTS,
+        faculty=faculty, sections=sections, rooms=rooms,
+        selected_faculty=selected_faculty, selected_section=selected_section,
+        selected_room=selected_room,
+        faculty_schedules=faculty_schedules,
+        section_schedules=section_schedules,
+        room_schedules=room_schedules,
+        selected_grid=selected_grid,
+    )
 
 @app.route('/academic')
 @admin_required
@@ -461,7 +686,10 @@ def add_unavailability():
     if not db.session.get(Faculty, faculty_id):
         flash('Select a valid professor.', 'danger')
         return redirect(url_for('availability'))
-    if day not in DAYS or not start or not end or start >= end:
+    if (
+        day not in DAYS or not start or not end or start >= end
+        or start < SCHOOL_START or end > SCHOOL_END
+    ):
         flash('Invalid day or time range.', 'danger')
         return redirect(url_for('availability'))
     db.session.add(Unavailability(faculty_id=faculty_id, day=day, start_time=start, end_time=end))
@@ -523,8 +751,7 @@ def manage_sections():
         'manage_sections.html',
         sections=Section.query.order_by(Section.name).all(),
         courses=Course.query.order_by(Course.code).all(),
-        assignments=SectionSubject.query.order_by(SectionSubject.section_id, SectionSubject.year_level, SectionSubject.course_id).all(),
-        year_levels=YEAR_LEVELS,
+        assignments=SectionSubject.query.order_by(SectionSubject.section_id, SectionSubject.course_id).all(),
     )
 
 @app.route('/manage-sections/subjects/add', methods=['POST'])
@@ -532,13 +759,9 @@ def manage_sections():
 def assign_section_subject():
     try:
         section_id = int(request.form.get('section_id', ''))
-        year_level = int(request.form.get('year_level', ''))
         course_id = int(request.form.get('course_id', ''))
     except ValueError:
-        flash('Select a valid section, year level, and subject.', 'danger')
-        return redirect(url_for('manage_sections'))
-    if year_level not in [level for level, _ in YEAR_LEVELS]:
-        flash('Select a valid year level.', 'danger')
+        flash('Select a valid section and subject.', 'danger')
         return redirect(url_for('manage_sections'))
     section, course = db.session.get(Section, section_id), db.session.get(Course, course_id)
     if not section or not course:
@@ -546,22 +769,17 @@ def assign_section_subject():
         return redirect(url_for('manage_sections'))
 
     assignment = db.session.get(SectionSubject, (section_id, course_id))
-    if assignment and assignment.year_level == year_level:
-        flash(f"{course.code} is already assigned to {section.name} for year {year_level}.", 'warning')
-        return redirect(url_for('manage_sections'))
     if assignment:
-        assignment.year_level = year_level
-        db.session.commit()
-        flash(f"{course.code} year updated for {section.name}.", 'success')
+        flash(f"{course.code} is already assigned to {section.name}.", 'warning')
         return redirect(url_for('manage_sections'))
-    db.session.add(SectionSubject(section_id=section_id, course_id=course_id, year_level=year_level))
+    db.session.add(SectionSubject(section_id=section_id, course_id=course_id))
     try:
         db.session.commit()
     except IntegrityError:
         db.session.rollback()
         flash(f"{course.code} is already assigned to {section.name}.", 'warning')
         return redirect(url_for('manage_sections'))
-    flash(f"{course.code} assigned to {section.name} for year {year_level}.", 'success')
+    flash(f"{course.code} assigned to {section.name}.", 'success')
     return redirect(url_for('manage_sections'))
 
 @app.route('/manage-sections/subjects/remove', methods=['POST'])
@@ -587,13 +805,29 @@ def remove_section_subject():
 @admin_required
 def schedules():
     all_scheds = Schedule.query.order_by(Schedule.day, Schedule.start_time).all()
+    faculty = Faculty.query.order_by(Faculty.name).all()
+    selected_faculty_id = request.args.get('faculty_id', type=int)
+    selected_faculty = next(
+        (professor for professor in faculty if professor.id == selected_faculty_id),
+        None,
+    )
+    displayed_schedules = (
+        [schedule for schedule in all_scheds if schedule.faculty_id == selected_faculty.id]
+        if selected_faculty else all_scheds
+    )
     statuses = {}
     for s in all_scheds:
         if s.is_pending: statuses[s.id] = ('pending', []); continue
-        new = {'day': s.day, 'start_time': s.start_time, 'end_time': s.end_time, 'room_id': s.room_id, 'faculty_id': s.faculty_id, 'section_id': s.section_id, 'course_id': s.course_id}
+        new = {'term_id': s.term_id, 'day': s.day, 'start_time': s.start_time, 'end_time': s.end_time, 'room_id': s.room_id, 'faculty_id': s.faculty_id, 'section_id': s.section_id, 'course_id': s.course_id}
         msgs = check_schedule_conflicts(new, all_scheds, exclude_id=s.id) + check_room_suitability(s.room, s.section, s.course)
         statuses[s.id] = ('ok' if not msgs else 'conflict', msgs)
-    return render_template('schedules.html', schedules=all_scheds, statuses=statuses, terms=Term.query.all(), courses=Course.query.order_by(Course.code).all(), faculty=Faculty.query.order_by(Faculty.name).all(), sections=Section.query.order_by(Section.name).all())
+    return render_template(
+        'schedules.html', schedules=displayed_schedules, statuses=statuses,
+        terms=Term.query.all(), courses=Course.query.order_by(Course.code).all(),
+        faculty=faculty, sections=Section.query.order_by(Section.name).all(),
+        selected_faculty_id=selected_faculty.id if selected_faculty else None,
+        selected_faculty=selected_faculty,
+    )
 
 @app.route('/schedules/add', methods=['POST'])
 @admin_required
@@ -618,7 +852,7 @@ def assign_schedule(id):
     room_id, day = int(request.form['room_id']), request.form['day']
     start, end = parse_time(request.form['start_time']), parse_time(request.form['end_time'])
     if not day or not start or not end or start >= end: flash('Invalid day or time.', 'danger'); return redirect(url_for('schedules'))
-    new = {'day': day, 'start_time': start, 'end_time': end, 'room_id': room_id, 'faculty_id': s.faculty_id, 'section_id': s.section_id, 'course_id': s.course_id}
+    new = {'term_id': s.term_id, 'day': day, 'start_time': start, 'end_time': end, 'room_id': room_id, 'faculty_id': s.faculty_id, 'section_id': s.section_id, 'course_id': s.course_id}
     conflicts = check_schedule_conflicts(new, Schedule.query.all(), exclude_id=s.id) + check_room_suitability(db.session.get(Room, room_id), s.section, s.course)
     if conflicts: flash(' | '.join(conflicts), 'danger'); return redirect(url_for('schedules'))
     s.room_id, s.day, s.start_time, s.end_time = room_id, day, start, end
@@ -641,7 +875,7 @@ def clear_schedules():
 def conflicts():
     all_scheds = Schedule.query.all(); rows = []
     for s in [x for x in all_scheds if not x.is_pending]:
-        new = {'day': s.day, 'start_time': s.start_time, 'end_time': s.end_time, 'room_id': s.room_id, 'faculty_id': s.faculty_id, 'section_id': s.section_id, 'course_id': s.course_id}
+        new = {'term_id': s.term_id, 'day': s.day, 'start_time': s.start_time, 'end_time': s.end_time, 'room_id': s.room_id, 'faculty_id': s.faculty_id, 'section_id': s.section_id, 'course_id': s.course_id}
         rows.append({'schedule': s, 'messages': check_schedule_conflicts(new, all_scheds, exclude_id=s.id) + check_room_suitability(s.room, s.section, s.course)})
     return render_template('conflicts.html', rows=rows, total=len(rows))
 
@@ -652,26 +886,52 @@ def generate():
     if not terms:
         flash('Create a term before generating schedules.', 'danger')
         return redirect(url_for('schedules'))
-    pending = [
-        schedule for schedule in Schedule.query.all()
-        if schedule.room_id is None
-        or schedule.day is None
-        or schedule.start_time is None
-        or schedule.end_time is None
-    ]
-    if not pending:
-        flash('Add course, professor, section, and term assignments before generating schedules.', 'info')
+    faculty_id = request.form.get('faculty_id', type=int)
+    if request.form.get('faculty_id', '').strip() and not faculty_id:
+        flash('Select a valid professor.', 'danger')
         return redirect(url_for('schedules'))
-    assigned_count, unassigned = 0, []
+    if faculty_id is None:
+        flash('Select a professor to generate schedules one at a time.', 'danger')
+        return redirect(url_for('schedules'))
+    selected_faculty = db.session.get(Faculty, faculty_id)
+    if not selected_faculty:
+        flash('Select a valid professor.', 'danger')
+        return redirect(url_for('schedules'))
+    if not SectionSubject.query.first() and not Schedule.query.filter_by(room_id=None).first():
+        flash('Assign subjects to sections and professors before generating schedules.', 'info')
+        return redirect(url_for('schedules'))
+    assigned_count, unassigned, missing_instructors, fallback_schedules = 0, [], [], []
     for term in terms:
-        assigned, term_unassigned = auto_generate(term.id)
-        assigned_count += assigned
-        unassigned.extend(term_unassigned)
+        result = auto_generate(term.id, faculty_id=faculty_id)
+        assigned_count += result.assigned
+        unassigned.extend(result.unassigned)
+        missing_instructors.extend(result.missing_instructors)
+        fallback_schedules.extend(result.fallback_schedules)
     if assigned_count:
-        flash(f'Auto-generator assigned {assigned_count} schedule(s).', 'success')
+        flash(
+            f'Auto-generator assigned {assigned_count} schedule(s), prioritizing {selected_faculty.name}.',
+            'success',
+        )
+    if fallback_schedules:
+        handoffs = ', '.join(
+            f'{schedule.course.code}/{schedule.section.name} to {schedule.faculty.name}'
+            for schedule in fallback_schedules
+        )
+        flash(
+            f'{selected_faculty.name} had no conflict-free slot for: {handoffs}. '
+            'These schedules were handed off to other qualified professors.',
+            'warning',
+        )
     if unassigned:
         flash(f"Could not place: {', '.join(f'{s.course.code}/{s.section.name}' for s in unassigned)}", 'warning')
-    return redirect(url_for('schedules'))
+    if missing_instructors:
+        flash(f"Assign a professor to these subjects before generating: {', '.join(missing_instructors)}", 'warning')
+    if not assigned_count and not unassigned and not missing_instructors:
+        flash(f'No unscheduled section subjects are assigned to {selected_faculty.name}.', 'info')
+    return redirect(
+        url_for('schedules')
+        if fallback_schedules else url_for('schedules', faculty_id=faculty_id)
+    )
 
 @app.route('/reports')
 @login_required

@@ -24,11 +24,11 @@
         </div>
 
         <ul class="nav flex-column mb-auto">
-            <li class="nav-item"><a class="nav-link text-white" href="{{ url_for('index') }}"><i class="bi bi-calendar-week me-2"></i> My Schedule</a></li>
+            <li class="nav-item"><a class="nav-link text-white" href="{{ url_for('index') }}"><i class="bi bi-calendar-week me-2"></i> Schedules</a></li>
             {% if current_user.role == 'Admin' %}
             <li class="nav-item"><a class="nav-link text-white" href="{{ url_for('schedules') }}"><i class="bi bi-plus-square me-2"></i> Create Schedule</a></li>
             <li class="nav-item"><a class="nav-link text-white" href="{{ url_for('availability') }}"><i class="bi bi-person-check me-2"></i> Professors, Subjects &amp; Unavailability</a></li>
-            <li class="nav-item"><a class="nav-link text-white" href="{{ url_for('manage_sections') }}"><i class="bi bi-collection me-2"></i> Manage Sections</a></li>
+            <li class="nav-item"><a class="nav-link text-white" href="{{ url_for('manage_sections') }}"><i class="bi bi-collection me-2"></i> Manage Sections Subjects</a></li>
             {% endif %}
             <li class="nav-item"><a class="nav-link text-white{% if request.endpoint == 'reports' and request.args.get('report', 'room-utilization') == 'room-utilization' %} active{% endif %}" href="{{ url_for('reports', report='room-utilization') }}" data-page-link><i class="bi bi-building me-2"></i> Room Utilization</a></li>
             <li class="nav-item"><a class="nav-link text-white{% if request.endpoint == 'reports' and request.args.get('report', 'room-utilization') == 'faculty-load' %} active{% endif %}" href="{{ url_for('reports', report='faculty-load') }}" data-page-link><i class="bi bi-person-lines-fill me-2"></i> Faculty Load</a></li>
@@ -47,7 +47,6 @@
     <div class="main-content w-100">
         <!-- Topbar -->
         <div class="topbar px-4 py-3 d-flex justify-content-between align-items-center">
-            <h5 class="mb-0 text-white fw-normal">Hello, <strong>{{ current_user.username }}</strong></h5>
             <div class="d-flex align-items-center text-white">
                 <span class="me-3 small">College of Computer Studies<br>Laguna State Polytechnic University</span>
                 <div class="bg-white rounded-circle p-2" style="width: 45px; height: 45px; display:flex; align-items:center; justify-content:center;">

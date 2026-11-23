@@ -1,27 +1,20 @@
 {% extends 'base.html' %}
 {% block content %}
-<h2 class="fw-bold mb-2" style="color: #310742;">Manage Sections</h2>
-<p class="text-muted mb-4">Assign subjects to a section and choose its year level.</p>
+<h2 class="fw-bold mb-2" style="color: #310742;">Manage Sections Subjects</h2>
+<p class="text-muted mb-4">Assign subjects from Master Data to a section.</p>
 
 <div class="card custom-card p-4 mb-4">
     <h5 class="fw-bold mb-3" style="color: #310742;">Assign a Subject to a Section</h5>
     <form method="POST" action="{{ url_for('assign_section_subject') }}" class="row g-3 align-items-end">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <div class="col-md-4">
+        <div class="col-md-5">
             <label for="section-id" class="form-label small fw-bold text-muted">Section</label>
             <select id="section-id" name="section_id" class="form-select" required>
                 <option value="">Select a section</option>
                 {% for section in sections %}<option value="{{ section.id }}">{{ section.name }}{% if section.program %} — {{ section.program }}{% endif %}</option>{% endfor %}
             </select>
         </div>
-        <div class="col-md-3">
-            <label for="year-level" class="form-label small fw-bold text-muted">Year Level</label>
-            <select id="year-level" name="year_level" class="form-select" required>
-                <option value="">Select a year</option>
-                {% for value, label in year_levels %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
-            </select>
-        </div>
-        <div class="col-md-3">
+        <div class="col-md-5">
             <label for="section-course" class="form-label small fw-bold text-muted">Subject</label>
             <select id="section-course" name="course_id" class="form-select" required>
                 <option value="">Select a subject</option>
@@ -36,12 +29,11 @@
     <h5 class="fw-bold mb-3" style="color: #310742;">Section Subjects</h5>
     <div class="table-responsive">
         <table class="table custom-table">
-            <thead><tr><th>Section</th><th>Year</th><th>Subject</th><th></th></tr></thead>
+            <thead><tr><th>Section</th><th>Subject</th><th></th></tr></thead>
             <tbody>
             {% for assignment in assignments %}
                 <tr>
                     <td class="fw-bold">{{ assignment.section.name }}</td>
-                    <td>{{ year_levels[assignment.year_level - 1][1] }}</td>
                     <td>{{ assignment.course.code }} — {{ assignment.course.title }}</td>
                     <td class="text-end">
                         <form method="POST" action="{{ url_for('remove_section_subject') }}">
@@ -53,7 +45,7 @@
                     </td>
                 </tr>
             {% else %}
-                <tr><td colspan="4" class="text-center text-muted py-4">No subjects have been assigned to sections.</td></tr>
+                <tr><td colspan="3" class="text-center text-muted py-4">No subjects have been assigned to sections.</td></tr>
             {% endfor %}
             </tbody>
         </table>

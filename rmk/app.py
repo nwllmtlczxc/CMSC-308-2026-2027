@@ -69,7 +69,6 @@ TIME_SLOTS = [
     (time(7, 0), time(8, 0)), (time(8, 0), time(9, 0)), (time(9, 0), time(10, 0)),
     (time(10, 0), time(11, 0)), (time(11, 0), time(12, 0)), (time(12, 0), time(13, 0)),
     (time(13, 0), time(14, 0)), (time(14, 0), time(15, 0)), (time(15, 0), time(16, 0)),
-    (time(16, 0), time(17, 0)),
 ]
 
 class User(UserMixin, db.Model):
@@ -352,35 +351,62 @@ def logout():
 @app.route('/')
 @login_required
 def index():
-    sections = Section.query.all()
-    
-    # Get the selected section from the URL (default to the first one)
+    faculty = Faculty.query.order_by(Faculty.name).all()
+    sections = Section.query.order_by(Section.name).all()
+    rooms = Room.query.order_by(Room.code).all()
+    selected_faculty_id = request.args.get('faculty_id', type=int)
     section_id = request.args.get('section_id', type=int)
-    if not section_id and sections:
-        section_id = sections[0].id
-
-    # Only fetch schedules for the selected section
-    if section_id:
-        all_scheds = Schedule.query.filter(
-            Schedule.room_id.isnot(None),
-            Schedule.section_id == section_id
-        ).all()
-    else:
-        all_scheds = []
-
-    grid = build_timetable(all_scheds)
+    selected_room_id = request.args.get('room_id', type=int)
+    selected_faculty = db.session.get(Faculty, selected_faculty_id) if selected_faculty_id else None
     selected_section = db.session.get(Section, section_id) if section_id else None
+    selected_room = db.session.get(Room, selected_room_id) if selected_room_id else None
+    all_schedules = Schedule.query.order_by(Schedule.day, Schedule.start_time).all()
+    section_schedules = [
+        schedule for schedule in all_schedules
+        if selected_section and schedule.section_id == selected_section.id
+    ]
+    faculty_schedules = [
+        schedule for schedule in all_schedules
+        if selected_faculty and schedule.faculty_id == selected_faculty.id
+    ]
+    room_schedules = [
+        schedule for schedule in all_schedules
+        if selected_room and schedule.room_id == selected_room.id
+    ]
+    selected_schedules = (
+        faculty_schedules if selected_faculty
+        else section_schedules if selected_section
+        else room_schedules if selected_room
+        else []
+    )
+    selected_grid = build_timetable([
+        schedule for schedule in selected_schedules if schedule.room_id is not None
+    ])
+    scheduled_section_classes = [
+        schedule for schedule in section_schedules if schedule.room_id is not None
+    ]
+    grid = build_timetable(scheduled_section_classes)
 
     stats = {
         'courses': Course.query.count(), 
         'faculty': Faculty.query.count(), 
         'rooms': Room.query.count(), 
         'sections': Section.query.count(), 
-        'schedules': len(all_scheds), 
-        'pending': Schedule.query.filter(Schedule.room_id.is_(None), Schedule.section_id == section_id).count() if section_id else 0
+        'schedules': len(scheduled_section_classes) if selected_section else Schedule.query.filter(Schedule.room_id.isnot(None)).count(),
+        'pending': sum(1 for schedule in section_schedules if schedule.room_id is None) if selected_section
+        else Schedule.query.filter(Schedule.room_id.is_(None)).count()
     }
     
-    return render_template('index.html', stats=stats, grid=grid, days=DAYS, time_slots=TIME_SLOTS, sections=sections, selected_section=selected_section)
+    return render_template(
+        'index.html', stats=stats, grid=grid, days=DAYS, time_slots=TIME_SLOTS,
+        faculty=faculty, sections=sections, rooms=rooms,
+        selected_faculty=selected_faculty, selected_section=selected_section,
+        selected_room=selected_room,
+        section_schedules=section_schedules,
+        faculty_schedules=faculty_schedules,
+        room_schedules=room_schedules,
+        selected_grid=selected_grid,
+    )
 
 @app.route('/academic')
 @admin_required

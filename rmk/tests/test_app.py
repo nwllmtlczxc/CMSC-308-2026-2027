@@ -1,9 +1,18 @@
+import importlib.util
+from pathlib import Path
+import sys
+
 import pytest
+from sqlalchemy import create_engine
 from datetime import time
 from flask import template_rendered
 from werkzeug.security import generate_password_hash
 
-import app as system
+app_path = Path(__file__).resolve().parents[1] / "app.py"
+app_spec = importlib.util.spec_from_file_location("rmk_app_under_test", app_path)
+system = importlib.util.module_from_spec(app_spec)
+sys.modules[app_spec.name] = system
+app_spec.loader.exec_module(system)
 
 
 @pytest.fixture()
@@ -11,11 +20,14 @@ def app(tmp_path):
     system.app.config.update(
         TESTING=True,
         WTF_CSRF_ENABLED=False,
-        SQLALCHEMY_DATABASE_URI=f"sqlite:///{tmp_path / 'test.db'}",
         SECRET_KEY="test-secret",
     )
-    with system.app.app_context():
-        system.db.drop_all()
+    test_engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    app_context = system.app.app_context()
+    app_context.push()
+    previous_engine = system.db.engines[None]
+    system.db.engines[None] = test_engine
+    try:
         system.db.create_all()
         admin = system.User(username="admin", password_hash=generate_password_hash("secret"), role="Admin")
         instructor = system.User(username="teacher", password_hash=generate_password_hash("secret"), role="Instructor")
@@ -29,6 +41,10 @@ def app(tmp_path):
         yield system.app
         system.db.session.remove()
         system.db.drop_all()
+    finally:
+        system.db.engines[None] = previous_engine
+        test_engine.dispose()
+        app_context.pop()
 
 
 @pytest.fixture()
@@ -78,6 +94,52 @@ def test_reports_only_include_selected_term_pending(app, client):
     template_rendered.disconnect(receiver, app)
     assert response.status_code == 200
     assert [item.id for item in captured["pending"]] == [first_id]
+
+
+def test_dashboard_shows_schedule_tables_for_each_resource(app, client):
+    captured = []
+
+    def receiver(sender, template, context, **extra):
+        if template.name == "index.html":
+            captured.append(context)
+
+    with app.app_context():
+        r = records()
+        schedule = system.Schedule(
+            term_id=r["term"].id, course_id=r["course"].id,
+            faculty_id=r["faculty"].id, section_id=r["section"].id,
+            room_id=r["room"].id, day="Mon", start_time=time(9), end_time=time(11),
+        )
+        system.db.session.add(schedule)
+        system.db.session.commit()
+        resource_ids = {
+            "faculty_id": r["faculty"].id,
+            "section_id": r["section"].id,
+            "room_id": r["room"].id,
+        }
+
+    login(client)
+    template_rendered.connect(receiver, system.app)
+    try:
+        response = client.get("/")
+        assert b'id="overall-timetable"' in response.data
+        for parameter, resource_id, schedule_list in (
+            ("faculty_id", resource_ids["faculty_id"], "faculty_schedules"),
+            ("section_id", resource_ids["section_id"], "section_schedules"),
+            ("room_id", resource_ids["room_id"], "room_schedules"),
+        ):
+            response = client.get(f"/?{parameter}={resource_id}")
+            assert response.status_code == 200
+            assert len(captured[-1][schedule_list]) == 1
+            assert b'id="resource-schedule-timetable"' in response.data
+            assert b'id="overall-timetable"' not in response.data
+            assert b">Time</th>" in response.data
+            assert b">Mon</th>" in response.data
+            assert b"4:00 PM" in response.data
+            assert b"5:00 PM" not in response.data
+        assert system.TIME_SLOTS[-1][1] == time(16)
+    finally:
+        template_rendered.disconnect(receiver, system.app)
 
 
 def test_auto_generation_uses_course_duration_and_term(app):

@@ -3,49 +3,54 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
         <h2 class="fw-bold mb-0" style="color: #310742;">Create Schedule</h2>
-        <p class="text-muted small mb-0">Add course assignments, then let Auto-Generate choose available rooms and times between 7:00 AM and 4:00 PM.</p>
+        <p class="text-muted small mb-0">Auto-Generate fills missing section-subject schedules with a qualified professor and conflict-free room and time. Existing schedules are kept.</p>
     </div>
     <div>
-        <form method="POST" action="{{ url_for('generate') }}" class="d-inline">
-<input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-orange">⚙ Auto-Generate</button></form>
         <form method="POST" action="{{ url_for('clear_schedules') }}" class="d-inline" onsubmit="return confirm('Clear ALL schedules?')">
 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-danger">Clear All</button></form>
     </div>
 </div>
 
-<div class="card custom-card p-4 mb-4">
-    <form method="POST" action="{{ url_for('add_schedule') }}" class="row g-3 align-items-end">
+<div class="card custom-card p-3 mb-4">
+    <span class="text-muted">
+        Before generating, assign subjects to sections in <a href="{{ url_for('manage_sections') }}">Manage Sections Subjects</a>,
+        assign each professor the subjects they can teach and record their unavailable times in
+        <a href="{{ url_for('availability') }}">Professors, Subjects &amp; Unavailability</a>.
+        Professors are considered available from 7:00 AM to 4:00 PM except during recorded unavailability.
+    </span>
+</div>
+
+<div class="card custom-card p-3 mb-4">
+    <form method="GET" action="{{ url_for('schedules') }}" class="row g-2 align-items-end">
+        <div class="col-md-8">
+            <label for="schedule-professor" class="form-label small fw-bold text-muted">Professor</label>
+            <select id="schedule-professor" name="faculty_id" class="form-select" required>
+                <option value="">Select a professor</option>
+                {% for professor in faculty %}
+                <option value="{{ professor.id }}" {% if selected_faculty_id == professor.id %}selected{% endif %}>{{ professor.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <div class="col-md-3">
-            <label class="form-label small fw-bold text-muted">Course</label>
-            <select name="course_id" class="form-select" required>{% for c in courses %}<option value="{{ c.id }}">{{ c.code }} — {{ c.title }}</option>{% endfor %}</select>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-outline-secondary w-100">View Schedule</button>
         </div>
-        <div class="col-md-3">
-            <label class="form-label small fw-bold text-muted">Professor</label>
-            <select name="faculty_id" class="form-select" required>{% for f in faculty %}<option value="{{ f.id }}">{{ f.name }}</option>{% endfor %}</select>
-        </div>
-        <div class="col-md-3">
-            <label class="form-label small fw-bold text-muted">Section</label>
-            <select name="section_id" class="form-select" required>{% for s in sections %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select>
-        </div>
-        <div class="col-md-3">
-            <label class="form-label small fw-bold text-muted">Term</label>
-            <select name="term_id" class="form-select" required>{% for t in terms %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}</select>
-        </div>
-        <div class="col-md-3">
-            <button class="btn btn-purple w-100">Add Assignment</button>
+        <div class="col-md-2">
+            <button type="submit" formmethod="POST" formaction="{{ url_for('generate') }}" class="btn btn-orange w-100">Auto-Generate</button>
         </div>
     </form>
+    <small class="text-muted mt-2">Auto-Generate prioritizes the selected professor. If they have no conflict-free slot, another professor assigned to that subject may be used. Existing schedules are kept.</small>
 </div>
 
 <div class="card custom-card p-4">
     <div class="table-responsive">
         <table class="table custom-table align-middle">
-            <thead><tr><th>Course</th><th>Professor</th><th>Section</th><th>Room</th><th>Day</th><th>Time</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Term</th><th>Course</th><th>Professor</th><th>Section</th><th>Room</th><th>Day</th><th>Time</th><th>Status</th><th></th></tr></thead>
             <tbody>
             {% for s in schedules %}
                 {% set status, messages = statuses[s.id] %}
                 <tr>
+                    <td>{{ s.term.name }}</td>
                     <td><strong>{{ s.course.code }}</strong><br><small class="text-muted">{{ s.course.title }}</small></td>
                     <td>{{ s.faculty.name }}</td>
                     <td>{{ s.section.name }}</td>
@@ -63,7 +68,7 @@
                     </td>
                 </tr>
             {% else %}
-                <tr><td colspan="8" class="text-center text-muted py-4">Add course, professor, section, and term assignments above, then click Auto-Generate.</td></tr>
+                <tr><td colspan="9" class="text-center text-muted py-4">{% if selected_faculty %}No schedules found for {{ selected_faculty.name }}.{% else %}Assign subjects to sections and professors, then click Auto-Generate.{% endif %}</td></tr>
             {% endfor %}
             </tbody>
         </table>

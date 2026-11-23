@@ -1,52 +1,112 @@
 {% extends 'base.html' %}
 {% block content %}
+{% macro schedule_table(grid, days, time_slots) %}
+<div class="table-responsive">
+    <table id="resource-schedule-timetable" class="table table-borderless custom-timetable mb-0">
+        <thead><tr><th style="width: 120px;">Time</th>{% for day in days %}<th>{{ day }}</th>{% endfor %}</tr></thead>
+        <tbody>
+        {% for start, end in time_slots %}
+            <tr>
+                <td class="fw-bold text-muted small text-center align-middle">{{ start.strftime('%I:%M %p').lstrip('0') }}<br><small>to {{ end.strftime('%I:%M %p').lstrip('0') }}</small></td>
+                {% for day in days %}
+                    {% set schedule = grid.get((day, start.strftime('%H:%M'))) %}
+                    <td class="p-1 position-relative">
+                        {% if schedule %}
+                        <div class="schedule-block">
+                            <div class="fw-bold">{{ schedule.course.code }}</div>
+                            <div class="small">{{ schedule.faculty.name }}</div>
+                            <div class="small opacity-75">{{ schedule.section.name }} | {{ schedule.room.code if schedule.room else 'TBA' }}</div>
+                        </div>
+                        {% else %}
+                        <div class="empty-slot"></div>
+                        {% endif %}
+                    </td>
+                {% endfor %}
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endmacro %}
 <div class="d-flex justify-content-between align-items-center mb-3">
     <div>
-        <h2 class="fw-bold mb-0" style="color: #310742;">My Schedule</h2>
+        <h2 class="fw-bold mb-0" style="color: #310742;">Schedules</h2>
         <p class="text-muted small mb-0 fst-italic">1st Semester 2026 - 2027</p>
     </div>
 </div>
 
-<div class="row g-3 mb-4">
-    <div class="col-md-4">
-        <div class="card custom-card h-100 p-3 border-purple">
-            <div class="card-body">
-                <h6 class="text-dark fw-bold mb-1">Classes this week</h6>
-                <h1 class="display-4 fw-bold mb-0 text-purple">{{ stats.schedules }}</h1>
-            </div>
+<div class="card custom-card p-3 mb-4">
+    <div class="row g-3">
+        <div class="col-md-4">
+            <label for="schedule-professor" class="form-label small fw-bold text-muted">Professor</label>
+            <form method="GET" action="{{ url_for('index') }}">
+                <select id="schedule-professor" name="faculty_id" class="form-select" onchange="this.form.submit()">
+                    <option value="">Select a professor</option>
+                    {% for professor in faculty %}
+                    <option value="{{ professor.id }}" {% if selected_faculty and selected_faculty.id == professor.id %}selected{% endif %}>{{ professor.name }}</option>
+                    {% endfor %}
+                </select>
+            </form>
         </div>
-    </div>
-    <div class="col-md-4">
-        <div class="card custom-card h-100 p-3 border-purple">
-            <div class="card-body">
-                <h6 class="text-dark fw-bold mb-1">Total Faculty</h6>
-                <h1 class="display-4 fw-bold mb-0 text-purple">{{ stats.faculty }}</h1>
-            </div>
+        <div class="col-md-4">
+            <label for="schedule-section" class="form-label small fw-bold text-muted">Section</label>
+            <form method="GET" action="{{ url_for('index') }}">
+                <select id="schedule-section" name="section_id" class="form-select" onchange="this.form.submit()">
+                    <option value="">Select a section</option>
+                    {% for section in sections %}
+                    <option value="{{ section.id }}" {% if selected_section and selected_section.id == section.id %}selected{% endif %}>{{ section.name }}</option>
+                    {% endfor %}
+                </select>
+            </form>
         </div>
-    </div>
-    <div class="col-md-4">
-        <div class="card custom-card h-100 p-3 bg-orange-subtle border-orange">
-            <div class="card-body">
-                <h6 class="text-dark fw-bold mb-1">Needs attention</h6>
-                <h1 class="display-4 fw-bold mb-0 text-orange">{{ stats.pending }} pending</h1>
-            </div>
+        <div class="col-md-4">
+            <label for="schedule-room" class="form-label small fw-bold text-muted">Room</label>
+            <form method="GET" action="{{ url_for('index') }}">
+                <select id="schedule-room" name="room_id" class="form-select" onchange="this.form.submit()">
+                    <option value="">Select a room</option>
+                    {% for room in rooms %}
+                    <option value="{{ room.id }}" {% if selected_room and selected_room.id == room.id %}selected{% endif %}>{{ room.code }}</option>
+                    {% endfor %}
+                </select>
+            </form>
         </div>
     </div>
 </div>
 
+{% if selected_faculty %}
+<div class="card custom-card p-4 mb-4">
+    <h5 class="fw-bold mb-3" style="color: #310742;">{{ selected_faculty.name }}’s Schedule</h5>
+    {% if not selected_grid %}<p class="text-muted mb-3">No scheduled classes to display.</p>{% endif %}
+    {{ schedule_table(selected_grid, days, time_slots) }}
+</div>
+{% elif selected_section %}
+<div class="card custom-card p-4 mb-4">
+    <h5 class="fw-bold mb-3" style="color: #310742;">{{ selected_section.name }} Schedule</h5>
+    {% if not selected_grid %}<p class="text-muted mb-3">No scheduled classes to display.</p>{% endif %}
+    {{ schedule_table(selected_grid, days, time_slots) }}
+</div>
+{% elif selected_room %}
+<div class="card custom-card p-4 mb-4">
+    <h5 class="fw-bold mb-3" style="color: #310742;">{{ selected_room.code }} Schedule</h5>
+    {% if not selected_grid %}<p class="text-muted mb-3">No scheduled classes to display.</p>{% endif %}
+    {{ schedule_table(selected_grid, days, time_slots) }}
+</div>
+{% endif %}
+
+{% if not selected_faculty and not selected_section and not selected_room %}
 <div class="card custom-card p-4">
     <div class="table-responsive">
-        <table class="table table-borderless custom-timetable mb-0">
+        <table id="overall-timetable" class="table table-borderless custom-timetable mb-0">
             <thead>
                 <tr>
-                    <th style="width: 80px;"></th>
+                    <th style="width: 120px;">Time</th>
                     {% for d in days %}<th>{{ d }}</th>{% endfor %}
                 </tr>
             </thead>
             <tbody>
             {% for start, end in time_slots %}
             <tr>
-                <td class="fw-bold text-muted small text-center align-middle">{{ start.strftime('%I:%M %p').lstrip('0') }}</td>
+                <td class="fw-bold text-muted small text-center align-middle">{{ start.strftime('%I:%M %p').lstrip('0') }}<br><small>to {{ end.strftime('%I:%M %p').lstrip('0') }}</small></td>
                 {% for d in days %}
                     {% set cell = grid.get((d, start.strftime('%H:%M'))) %}
                     <td class="p-1 position-relative">
@@ -66,4 +126,5 @@
         </table>
     </div>
 </div>
+{% endif %}
 {% endblock %}
