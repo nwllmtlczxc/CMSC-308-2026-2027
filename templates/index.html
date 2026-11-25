@@ -33,6 +33,9 @@
         <h2 class="fw-bold mb-0" style="color: #310742;">Schedules</h2>
         <p class="text-muted small mb-0 fst-italic">1st Semester 2026 - 2027</p>
     </div>
+    <a class="btn btn-orange" href="{{ url_for('export_schedule', faculty_id=selected_faculty.id if selected_faculty else None, section_id=selected_section.id if selected_section else None, room_id=selected_room.id if selected_room else None) }}">
+        <i class="bi bi-file-earmark-pdf me-1"></i> Export PDF
+    </a>
 </div>
 
 <div class="card custom-card p-3 mb-4">

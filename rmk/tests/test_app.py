@@ -68,6 +68,17 @@ def test_login_and_admin_permissions(client):
     assert client.post("/academic/course/add", data={"code": "CS202", "title": "Unauthorized", "units": 1}).status_code == 403
 
 
+def test_signup_page_and_route_are_removed(client):
+    assert client.get("/register").status_code == 404
+    response = client.post(
+        "/register", data={"username": "new-user", "password": "secret"}
+    )
+    assert response.status_code == 404
+    login_page = client.get("/login")
+    assert login_page.status_code == 200
+    assert b"Signup" not in login_page.data
+
+
 def test_conflicts_are_scoped_to_term(app):
     with app.app_context():
         r = records(); term, other = r["term"], r["other"]

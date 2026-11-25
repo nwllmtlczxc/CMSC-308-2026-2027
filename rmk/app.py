@@ -16,7 +16,7 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from flask_migrate import Migrate
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
-from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.security import check_password_hash
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 app = Flask(__name__)
@@ -316,29 +316,6 @@ def login():
             return redirect(url_for('index'))
         flash('Invalid username or password.', 'login-error')
     return render_template('login.html')
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if current_user.is_authenticated: return redirect(url_for('index'))
-    if request.method == 'POST':
-        username = (request.form.get('username') or '').strip()
-        password = request.form.get('password') or ''
-        if not username or not password:
-            flash('Enter both a username and password.', 'register-error')
-        elif len(username) > 80:
-            flash('Username must be 80 characters or fewer.', 'register-error')
-        elif User.query.filter_by(username=username).first():
-            flash('That email or username is already registered. Please log in or use another one.', 'register-error')
-        else:
-            try:
-                db.session.add(User(username=username, password_hash=generate_password_hash(password)))
-                db.session.commit()
-                flash('Account created. Please log in.', 'register-success')
-                return redirect(url_for('login'))
-            except IntegrityError:
-                db.session.rollback()
-                flash('That email or username is already registered. Please log in or use another one.', 'register-error')
-    return render_template('register.html')
 
 @app.route('/logout', methods=['POST'])
 @login_required

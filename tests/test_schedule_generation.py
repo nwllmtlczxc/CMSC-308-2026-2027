@@ -1,8 +1,11 @@
 from datetime import time
+from io import BytesIO
 
 import pytest
+from pypdf import PdfReader
 from sqlalchemy import create_engine
 from flask import template_rendered
+from werkzeug.security import check_password_hash
 
 import app as system
 
@@ -81,6 +84,47 @@ def test_auto_generate_uses_subjects_and_unavailability_without_conflicts(app):
             assert system.check_schedule_conflicts(
                 candidate, schedules, exclude_id=schedule.id
             ) == []
+
+
+def test_signup_page_and_route_are_removed(app):
+    client = app.test_client()
+
+    assert client.get("/register").status_code == 404
+    response = client.post(
+        "/register", data={"username": "new-user", "password": "secret"}
+    )
+    assert response.status_code == 404
+    login_page = client.get("/login")
+    assert login_page.status_code == 200
+    assert b"Signup" not in login_page.data
+
+
+def test_add_user_cli_creates_instructor_with_hashed_password(app):
+    result = app.test_cli_runner().invoke(
+        args=["add-user"], input="new-user\nsecret\nsecret\n"
+    )
+
+    assert result.exit_code == 0, result.output
+    with app.app_context():
+        user = system.User.query.filter_by(username="new-user").first()
+        assert user is not None
+        assert user.role == "Instructor"
+        assert check_password_hash(user.password_hash, "secret")
+
+
+def test_add_user_cli_rejects_duplicate_username(app):
+    with app.app_context():
+        system.db.session.add(
+            system.User(username="existing-user", password_hash="already-hashed")
+        )
+        system.db.session.commit()
+
+    result = app.test_cli_runner().invoke(
+        args=["add-user"], input="existing-user\n"
+    )
+
+    assert result.exit_code != 0
+    assert "already exists" in result.output
 
 
 def test_auto_generate_reports_missing_qualified_professor(app):
@@ -213,6 +257,7 @@ def test_dashboard_shows_schedule_tables_for_each_resource(app):
     try:
         response = client.get("/")
         assert b'id="overall-timetable"' in response.data
+        assert b'href="/export-schedule"' in response.data
         for parameter, resource_id, schedule_list in (
             ("faculty_id", resource_ids["faculty_id"], "faculty_schedules"),
             ("section_id", resource_ids["section_id"], "section_schedules"),
@@ -220,6 +265,7 @@ def test_dashboard_shows_schedule_tables_for_each_resource(app):
         ):
             response = client.get(f"/?{parameter}={resource_id}")
             assert response.status_code == 200
+            assert f"/export-schedule?{parameter}={resource_id}".encode() in response.data
             assert len(rendered[-1][schedule_list]) == 1
             assert b'id="resource-schedule-timetable"' in response.data
             assert b'id="overall-timetable"' not in response.data
@@ -230,6 +276,146 @@ def test_dashboard_shows_schedule_tables_for_each_resource(app):
         assert system.TIME_SLOTS[-1][1] == time(16)
     finally:
         template_rendered.disconnect(capture_dashboard, system.app)
+
+
+def test_export_schedule_requires_login(app):
+    assert app.test_client().get("/export-schedule").status_code == 302
+
+
+def test_export_schedule_pdf_matches_selected_professor_section_and_room(app):
+    client = app.test_client()
+    rendered = {}
+
+    def capture_export(sender, template, context, **extra):
+        if template.name == "schedule_export.html":
+            rendered.update(context)
+
+    with app.app_context():
+        term = system.Term(name="Fall")
+        course_a = system.Course(code="CS101", title="Programming")
+        course_b = system.Course(code="CS202", title="Algorithms")
+        professor_a = system.Faculty(name="Ada")
+        professor_b = system.Faculty(name="Grace")
+        room_a = system.Room(code="R1", capacity=40)
+        room_b = system.Room(code="R2", capacity=40)
+        section_a = system.Section(name="A", size=30)
+        section_b = system.Section(name="B", size=30)
+        user = system.User(username="export-user", password_hash="unused")
+        system.db.session.add_all([
+            term, course_a, course_b, professor_a, professor_b,
+            room_a, room_b, section_a, section_b, user,
+        ])
+        system.db.session.commit()
+        system.db.session.add_all([
+            system.Schedule(
+                term_id=term.id, course_id=course_a.id,
+                faculty_id=professor_a.id, section_id=section_a.id,
+                room_id=room_a.id, day="Mon",
+                start_time=time(9), end_time=time(10),
+            ),
+            system.Schedule(
+                term_id=term.id, course_id=course_b.id,
+                faculty_id=professor_b.id, section_id=section_b.id,
+                room_id=room_b.id, day="Tue",
+                start_time=time(10), end_time=time(11),
+            ),
+        ])
+        system.db.session.commit()
+        user_id = user.id
+        filters = [
+            (
+                "faculty_id", professor_a.id, "professorSchedule.pdf",
+                "CS101", "Mon", "09:00",
+            ),
+            (
+                "section_id", section_b.id, "sectionSchedule.pdf",
+                "CS202", "Tue", "10:00",
+            ),
+            (
+                "room_id", room_a.id, "roomSchedule.pdf",
+                "CS101", "Mon", "09:00",
+            ),
+        ]
+
+    with client.session_transaction() as session:
+        session["_user_id"] = str(user_id)
+        session["_fresh"] = True
+
+    template_rendered.connect(capture_export, app)
+    try:
+        for filter_name, filter_id, filename, course_code, day, start_time in filters:
+            response = client.get(
+                f"/export-schedule?{filter_name}={filter_id}"
+            )
+
+            assert response.status_code == 200
+            assert response.mimetype == "application/pdf"
+            assert response.headers["Content-Disposition"].endswith(filename)
+            assert response.data.startswith(b"%PDF")
+            pdf_reader = PdfReader(BytesIO(response.data))
+            assert len(pdf_reader.pages) == 1
+            text = pdf_reader.pages[0].extract_text()
+            headings = [
+                "Laguna State Polytechnic University",
+                "College of Computer Studies",
+                "CLASS SCHEDULE",
+            ]
+            assert all(heading in text for heading in headings)
+            assert [text.index(heading) for heading in headings] == sorted(
+                text.index(heading) for heading in headings
+            )
+            text_positions = {}
+
+            def capture_positions(value, matrix, text_matrix, font, font_size):
+                if "CLASS SCHEDULE" in value:
+                    text_positions["title"] = (matrix, text_matrix)
+                if value.strip() == "Time":
+                    text_positions["table"] = (matrix, text_matrix)
+
+            pdf_reader.pages[0].extract_text(visitor_text=capture_positions)
+            title_y = text_positions["title"][0][5]
+            table_y = text_positions["table"][0][5]
+            assert title_y - table_y >= 50
+            exported_grid = rendered["grid"]
+            assert len(exported_grid) == 1
+            assert exported_grid[(day, start_time)].course.code == course_code
+
+        response = client.get("/export-schedule")
+        assert response.status_code == 200
+        assert response.headers["Content-Disposition"].endswith("schedule.pdf")
+        assert len(PdfReader(BytesIO(response.data)).pages) == 1
+        assert len(rendered["grid"]) == 2
+
+        with app.app_context():
+            term = system.Term.query.first()
+            course = system.Course.query.filter_by(code="CS101").first()
+            professor = system.Faculty.query.filter_by(name="Ada").first()
+            room = system.Room.query.filter_by(code="R1").first()
+            section = system.Section.query.filter_by(name="A").first()
+            professor.name = "Professor " + "Ada " * 10
+            section.name = "Section " + "A " * 20
+            room.code = "Room " + "1 " * 5
+            existing_slots = {("Mon", time(9)), ("Tue", time(10))}
+            system.db.session.add_all([
+                system.Schedule(
+                    term_id=term.id, course_id=course.id,
+                    faculty_id=professor.id, section_id=section.id,
+                    room_id=room.id, day=day,
+                    start_time=start, end_time=end,
+                )
+                for day in system.DAYS
+                for start, end in system.TIME_SLOTS
+                if (day, start) not in existing_slots
+            ])
+            system.db.session.commit()
+
+        response = client.get("/export-schedule")
+        assert response.status_code == 200
+        dense_pdf = PdfReader(BytesIO(response.data))
+        assert len(dense_pdf.pages) == 1
+        assert len(rendered["grid"]) == len(system.DAYS) * len(system.TIME_SLOTS)
+    finally:
+        template_rendered.disconnect(capture_export, app)
 
 
 def test_schedules_page_filters_by_selected_professor(app):

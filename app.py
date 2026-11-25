@@ -5,16 +5,18 @@ Classroom Scheduling and Academic Timetabling System
 
 import os
 import secrets
+from io import BytesIO
 from functools import wraps
 import click
 from flask import abort
 from flask_wtf.csrf import CSRFProtect
 from datetime import time, datetime, timedelta
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.exc import IntegrityError
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
+from xhtml2pdf import pisa
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 app = Flask(__name__)
@@ -63,6 +65,33 @@ def make_admin(username):
     user.role = 'Admin'
     db.session.commit()
     click.echo(f'{username} is now an administrator.')
+
+
+@app.cli.command('add-user')
+def add_user():
+    username = click.prompt('Username').strip()
+    if not username:
+        raise click.ClickException('Username cannot be empty.')
+    if len(username) > 80:
+        raise click.ClickException('Username must be 80 characters or fewer.')
+    if User.query.filter_by(username=username).first():
+        raise click.ClickException(f'An account for {username!r} already exists.')
+
+    password = click.prompt('Password', hide_input=True, confirmation_prompt=True)
+    if not password:
+        raise click.ClickException('Password cannot be empty.')
+
+    db.session.add(User(
+        username=username,
+        password_hash=generate_password_hash(password),
+    ))
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        raise click.ClickException(f'An account for {username!r} already exists.')
+
+    click.echo(f'Instructor account created for {username!r}.')
 
 DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 SCHOOL_START = time(7, 0)
@@ -461,6 +490,27 @@ def build_timetable(schedules):
         if s.day and s.start_time: grid[(s.day, s.start_time.strftime('%H:%M'))] = s
     return grid
 
+
+def get_selected_schedule_resources():
+    faculty_id = request.args.get('faculty_id', type=int)
+    section_id = request.args.get('section_id', type=int)
+    room_id = request.args.get('room_id', type=int)
+    return (
+        db.session.get(Faculty, faculty_id) if faculty_id else None,
+        db.session.get(Section, section_id) if section_id else None,
+        db.session.get(Room, room_id) if room_id else None,
+    )
+
+
+def filter_schedules_by_resource(schedules, faculty, section, room):
+    if faculty:
+        return [schedule for schedule in schedules if schedule.faculty_id == faculty.id]
+    if section:
+        return [schedule for schedule in schedules if schedule.section_id == section.id]
+    if room:
+        return [schedule for schedule in schedules if schedule.room_id == room.id]
+    return []
+
 # ============================================================
 # AUTH ROUTES
 # ============================================================
@@ -474,20 +524,6 @@ def login():
             return redirect(url_for('index'))
         flash('Username or password is incorrect.', 'danger')
     return render_template('login.html')
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if current_user.is_authenticated: return redirect(url_for('index'))
-    if request.method == 'POST':
-        username = request.form.get('username')
-        if User.query.filter_by(username=username).first():
-            flash('Username already exists.', 'danger')
-        else:
-            db.session.add(User(username=username, password_hash=generate_password_hash(request.form.get('password'))))
-            db.session.commit()
-            flash('Account created! Please log in.', 'success')
-            return redirect(url_for('login'))
-    return render_template('register.html')
 
 @app.route('/logout', methods=['POST'])
 @login_required
@@ -504,12 +540,7 @@ def index():
     faculty = Faculty.query.order_by(Faculty.name).all()
     sections = Section.query.order_by(Section.name).all()
     rooms = Room.query.order_by(Room.code).all()
-    selected_faculty_id = request.args.get('faculty_id', type=int)
-    selected_section_id = request.args.get('section_id', type=int)
-    selected_room_id = request.args.get('room_id', type=int)
-    selected_faculty = db.session.get(Faculty, selected_faculty_id) if selected_faculty_id else None
-    selected_section = db.session.get(Section, selected_section_id) if selected_section_id else None
-    selected_room = db.session.get(Room, selected_room_id) if selected_room_id else None
+    selected_faculty, selected_section, selected_room = get_selected_schedule_resources()
     all_schedules = Schedule.query.order_by(Schedule.day, Schedule.start_time).all()
     scheduled_classes = [schedule for schedule in all_schedules if schedule.room_id is not None]
     grid = build_timetable(scheduled_classes)
@@ -525,11 +556,8 @@ def index():
         schedule for schedule in all_schedules
         if selected_room and schedule.room_id == selected_room.id
     ]
-    selected_schedules = (
-        faculty_schedules if selected_faculty
-        else section_schedules if selected_section
-        else room_schedules if selected_room
-        else []
+    selected_schedules = filter_schedules_by_resource(
+        all_schedules, selected_faculty, selected_section, selected_room
     )
     selected_grid = build_timetable([
         schedule for schedule in selected_schedules if schedule.room_id is not None
@@ -546,12 +574,51 @@ def index():
     return render_template(
         'index.html', stats=stats, grid=grid, days=DAYS, time_slots=TIME_SLOTS,
         faculty=faculty, sections=sections, rooms=rooms,
+        selected_faculty_id=selected_faculty.id if selected_faculty else None,
         selected_faculty=selected_faculty, selected_section=selected_section,
         selected_room=selected_room,
         faculty_schedules=faculty_schedules,
         section_schedules=section_schedules,
         room_schedules=room_schedules,
         selected_grid=selected_grid,
+    )
+
+
+@app.route('/export-schedule')
+@login_required
+def export_schedule():
+    selected_faculty, selected_section, selected_room = get_selected_schedule_resources()
+    all_schedules = Schedule.query.order_by(Schedule.day, Schedule.start_time).all()
+    if selected_faculty or selected_section or selected_room:
+        displayed_schedules = filter_schedules_by_resource(
+            all_schedules, selected_faculty, selected_section, selected_room
+        )
+    else:
+        displayed_schedules = all_schedules
+    grid = build_timetable([
+        schedule for schedule in displayed_schedules if schedule.room_id is not None
+    ])
+
+    filename = 'schedule.pdf'
+    if selected_faculty:
+        filename = 'professorSchedule.pdf'
+    elif selected_section:
+        filename = 'sectionSchedule.pdf'
+    elif selected_room:
+        filename = 'roomSchedule.pdf'
+
+    html = render_template(
+        'schedule_export.html', grid=grid, days=DAYS, time_slots=TIME_SLOTS,
+    )
+    output = BytesIO()
+    pdf = pisa.pisaDocument(BytesIO(html.encode('utf-8')), output)
+    if pdf.err:
+        app.logger.error('Failed to generate schedule PDF: %s PDF error(s).', pdf.err)
+        abort(500, description='Could not generate the schedule PDF.')
+    output.seek(0)
+    return send_file(
+        output, mimetype='application/pdf', as_attachment=True,
+        download_name=filename,
     )
 
 @app.route('/academic')
