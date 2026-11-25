@@ -378,13 +378,46 @@ def test_export_schedule_pdf_matches_selected_professor_section_and_room(app):
             assert title_y - table_y >= 50
             exported_grid = rendered["grid"]
             assert len(exported_grid) == 1
-            assert exported_grid[(day, start_time)].course.code == course_code
+            assert exported_grid[(day, start_time)][0].course.code == course_code
 
         response = client.get("/export-schedule")
         assert response.status_code == 200
         assert response.headers["Content-Disposition"].endswith("schedule.pdf")
         assert len(PdfReader(BytesIO(response.data)).pages) == 1
         assert len(rendered["grid"]) == 2
+
+        with app.app_context():
+            term = system.Term.query.first()
+            course = system.Course.query.filter_by(code="CS101").first()
+            professor = system.Faculty.query.filter_by(name="Ada").first()
+            room = system.Room.query.filter_by(code="R1").first()
+            section = system.Section.query.filter_by(name="A").first()
+            conflicting_course = system.Course(code="CS303", title="Databases")
+            conflicting_section = system.Section(name="C", size=25)
+            system.db.session.add_all([conflicting_course, conflicting_section])
+            system.db.session.flush()
+            system.db.session.add(system.Schedule(
+                term_id=term.id, course_id=conflicting_course.id,
+                faculty_id=professor.id, section_id=conflicting_section.id,
+                room_id=room.id, day="Mon",
+                start_time=time(9), end_time=time(10),
+            ))
+            system.db.session.commit()
+            conflicting_schedule_id = system.Schedule.query.filter_by(
+                course_id=conflicting_course.id
+            ).one().id
+
+        response = client.get("/export-schedule", follow_redirects=True)
+        assert response.status_code == 200
+        assert response.mimetype == "text/html"
+        assert b"Cannot export a schedule with conflicts" in response.data
+
+        with app.app_context():
+            conflicting_schedule = system.db.session.get(
+                system.Schedule, conflicting_schedule_id
+            )
+            system.db.session.delete(conflicting_schedule)
+            system.db.session.commit()
 
         with app.app_context():
             term = system.Term.query.first()

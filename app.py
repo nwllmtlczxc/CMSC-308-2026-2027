@@ -595,9 +595,45 @@ def export_schedule():
         )
     else:
         displayed_schedules = all_schedules
-    grid = build_timetable([
-        schedule for schedule in displayed_schedules if schedule.room_id is not None
-    ])
+
+    for schedule in displayed_schedules:
+        if schedule.is_pending:
+            continue
+        candidate = {
+            'term_id': schedule.term_id,
+            'day': schedule.day,
+            'start_time': schedule.start_time,
+            'end_time': schedule.end_time,
+            'room_id': schedule.room_id,
+            'faculty_id': schedule.faculty_id,
+            'section_id': schedule.section_id,
+            'course_id': schedule.course_id,
+        }
+        conflicts = check_schedule_conflicts(
+            candidate, all_schedules, exclude_id=schedule.id
+        )
+        if schedule.room is not None:
+            conflicts += check_room_suitability(
+                schedule.room, schedule.section, schedule.course
+            )
+        if conflicts:
+            flash(
+                'Cannot export a schedule with conflicts. Resolve them first.',
+                'danger',
+            )
+            return redirect(url_for(
+                'index',
+                faculty_id=selected_faculty.id if selected_faculty else None,
+                section_id=selected_section.id if selected_section else None,
+                room_id=selected_room.id if selected_room else None,
+            ))
+
+    grid = {}
+    for schedule in displayed_schedules:
+        if schedule.room_id is None or not schedule.day or not schedule.start_time:
+            continue
+        slot = (schedule.day, schedule.start_time.strftime('%H:%M'))
+        grid.setdefault(slot, []).append(schedule)
 
     filename = 'schedule.pdf'
     if selected_faculty:

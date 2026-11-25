@@ -16,6 +16,7 @@
         .time { width: 60px; }
         .course { background-color: #f3eafa; }
         .course-code { font-weight: bold; }
+        .course-entry + .course-entry { border-top: 1px solid #888; padding-top: 2px; margin-top: 2px; }
         .table-spacer { height: 50px; line-height: 50px; }
     </style>
 </head>
@@ -41,13 +42,15 @@
                     to {{ end.strftime('%I:%M %p').lstrip('0') }}
                 </td>
                 {% for day in days %}
-                    {% set schedule = grid.get((day, start.strftime('%H:%M'))) %}
-                    <td{% if schedule %} class="course"{% endif %}>
-                        {% if schedule %}
+                    {% set schedules = grid.get((day, start.strftime('%H:%M')), []) %}
+                    <td{% if schedules %} class="course"{% endif %}>
+                        {% for schedule in schedules %}
+                        <div class="course-entry">
                             <span class="course-code">{{ schedule.course.code }}</span><br>
                             {{ schedule.faculty.name }}<br>
                             {{ schedule.section.name }} | {{ schedule.room.code if schedule.room else 'TBA' }}
-                        {% endif %}
+                        </div>
+                        {% endfor %}
                     </td>
                 {% endfor %}
             </tr>
